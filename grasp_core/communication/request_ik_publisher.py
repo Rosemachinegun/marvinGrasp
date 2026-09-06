@@ -220,6 +220,7 @@ class RequestIkTargetPublisher:
         min_steps: int = 1,
         final_hold_sec: float | None = None,
         terminal_slowdown: bool = False,
+        include_start: bool = False,
     ) -> int:
         topic = self.client.topic_for_hand(hand)
         end_position = checked_position(position_xyz)
@@ -256,6 +257,11 @@ class RequestIkTargetPublisher:
             max_step_deg=max_step_deg,
             min_steps=min_steps,
         )
+        if include_start:
+            # Establish the measured IK pose as the first command, before any
+            # interpolated motion. Only post-interruption HOME opts into this.
+            trajectory.samples.insert(0, (start_position.copy(), start_orientation))
+            trajectory.segment_steps[0] += 1
         steps = sum(trajectory.segment_steps)
         period_sec = 1.0 / self.publish_rate_hz
         count = 0
@@ -1194,6 +1200,7 @@ def publish_home_request_ik_target(
     args: argparse.Namespace,
     *,
     final_hold_sec: float | None = None,
+    start_pose: PoseWaypoint | None = None,
 ) -> str:
     if publisher is None:
         status = "request_ik_tester publisher unavailable; check ROS2 sourcing"
@@ -1210,9 +1217,14 @@ def publish_home_request_ik_target(
         position,
         orientation,
         args,
+        start_position_xyz=start_pose[0] if start_pose is not None else None,
+        start_orientation_xyzw=start_pose[1] if start_pose is not None else None,
         final_hold_sec=final_hold_sec,
         terminal_slowdown=True,
+        include_start=start_pose is not None,
     )
+    if start_pose is not None and (count <= 0 or publisher.stop_requested()):
+        raise RuntimeError("HOME interrupted before completion; measured sync still required")
 
     topic = args.left_target_topic if hand == "left" else args.right_target_topic
     qx, qy, qz, qw = orientation
@@ -1246,6 +1258,7 @@ def publish_request_ik_target(
     start_orientation_xyzw: tuple[float, float, float, float] | None = None,
     final_hold_sec: float | None = None,
     terminal_slowdown: bool = False,
+    include_start: bool = False,
 ) -> int:
     if not bool(getattr(args, "target_smooth_trajectory", True)):
         return publisher.publish_target(
@@ -1266,6 +1279,7 @@ def publish_request_ik_target(
         min_steps=int(getattr(args, "target_trajectory_min_steps", 1)),
         final_hold_sec=final_hold_sec,
         terminal_slowdown=terminal_slowdown,
+        include_start=include_start,
     )
 
 

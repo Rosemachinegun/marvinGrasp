@@ -72,6 +72,15 @@ class Ros2PoseTargetPublisher:
             else None
         )
 
+    def wait_for_settled_tool_pose(
+        self, hand: str, *, timeout_sec: float = 5.0, cancelled=lambda: False,
+    ) -> tuple[np.ndarray, tuple[float, float, float, float]]:
+        from grasp_core.communication.measured_home_pose import wait_for_measured_home_pose
+
+        return wait_for_measured_home_pose(
+            self, hand, timeout_sec=timeout_sec, cancelled=cancelled,
+        )
+
     def close(self) -> None:
         self.node.destroy_node()
 

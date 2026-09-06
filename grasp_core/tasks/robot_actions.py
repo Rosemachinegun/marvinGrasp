@@ -89,13 +89,25 @@ class RobotActionService:
             ok=result.ok,
         )
 
-    def publish_home(self, hand: str) -> str:
+    def publish_home(self, hand: str, *, fresh_measured_start: bool = False) -> str:
         home_xyz = self.args.left_home_xyz if hand == "left" else self.args.right_home_xyz
+        start = None
+        if fresh_measured_start:
+            if not bool(getattr(self.args, "target_smooth_trajectory", True)):
+                raise RuntimeError("post-pause HOME requires target_smooth_trajectory")
+            if self.ik_publisher is None:
+                raise RuntimeError("measured pose publisher unavailable")
+            start = self.ik_publisher.client.wait_for_settled_tool_pose(
+                hand, cancelled=self.ik_publisher.stop_requested,
+            )
+            if self.ik_publisher.stop_requested():
+                raise RuntimeError("HOME interrupted by S")
         return publish_home_request_ik_target(
             self.ik_publisher,
             hand,
             home_xyz,
             self.args,
+            start_pose=start,
         )
 
     def send_gripper(self, command: str, hand: str | None = None) -> str:

@@ -1,0 +1,66 @@
+| 变量                        | 含义                                                |
+| ------------------------- | ------------------------------------------------- |
+| `left_server`             | 左夹爪控制服务地址，格式 `IP:端口`。                             |
+| `right_server`            | 右夹爪控制服务地址。                                        |
+| `dual`                    | 是否启用双夹爪模式。`True` 表示左右夹爪都参与初始化/控制。                 |
+| `left_clamp_pos`          | 左夹爪底层标定中的“夹紧参考位置”。这是设备原始位置单位，不是后面的 100~1000 逻辑位置。 |
+| `right_clamp_pos`         | 右夹爪夹紧参考位置。                                        |
+| `left_open_pos`           | 左夹爪底层标定中的“完全打开参考位置”。                              |
+| `right_open_pos`          | 右夹爪完全打开参考位置。                                      |
+| `left_max_itinerary`      | 左夹爪最大允许行程，通常用于原始位置与逻辑位置之间的映射/校准。                  |
+| `right_max_itinerary`     | 右夹爪最大允许行程。                                        |
+| `left_speed_coe`          | 左夹爪底层速度换算系数。通常将上层速度值转换成电机/SDK 使用的速度量。             |
+| `right_speed_coe`         | 右夹爪速度换算系数。                                        |
+| `calibration_tolerance`   | 标定位置允许误差。实际位置与标定目标差值在这个范围内可认为到位。                  |
+| `connect_attempts`        | 连接夹爪服务器最多尝试次数。                                    |
+| `connect_timeout_sec`     | 单次连接超时时间，当前 2 秒。                                  |
+| `connect_retry_delay_sec` | 连接失败后再次尝试前等待时间，当前 0.2 秒。                          |
+| `allow_homing_fallback`   | 标定/初始化失败时是否允许退回到 homing 回零流程。`False` 表示不自动这么做。    |
+| 变量              | 含义                        |
+| --------------- | ------------------------- |
+| `left_min_pos`  | 左夹爪逻辑上的最小位置，通常代表接近“完全闭合”。 |
+| `right_min_pos` | 右夹爪逻辑最小位置。                |
+| `left_max_pos`  | 左夹爪逻辑最大位置，通常代表接近“完全打开”。   |
+| `right_max_pos` | 右夹爪逻辑最大位置。                |
+| 变量                  | 含义                    |
+| ------------------- | --------------------- |
+| `left_grip_speed`   | 左夹爪执行抓取/闭合时的速度。       |
+| `right_grip_speed`  | 右夹爪抓取速度。              |
+| `left_grip_torque`  | 左夹爪主动闭合阶段使用的力矩/力度。    |
+| `right_grip_torque` | 右夹爪主动闭合力度。            |
+| `left_hold_torque`  | 左夹爪检测到抓住物体后维持夹持使用的力矩。 |
+| `right_hold_torque` | 右夹爪保持力矩。              |
+| 变量                        | 含义                                          |
+| ------------------------- | ------------------------------------------- |
+| `left_current_threshold`  | 左夹爪电流阈值。电流超过一定程度通常意味着碰到物体或电机受阻。             |
+| `right_current_threshold` | 右夹爪电流阈值。                                    |
+| `left_poll_interval`      | 左夹爪状态读取周期，0.05 秒，即约 20 Hz。                  |
+| `right_poll_interval`     | 右夹爪状态读取周期。                                  |
+| `left_contact_grace`      | 发出闭合命令后，先等待一段时间再开始判断接触/堵转，防止启动瞬间误判。         |
+| `right_contact_grace`     | 右夹爪同上。                                      |
+| `left_progress_epsilon`   | 判断夹爪是否“还在运动”的最小位置变化量。相邻采样变化小于等于 2，可能认为基本没动。 |
+| `right_progress_epsilon`  | 右夹爪最小有效移动量。                                 |
+| `left_stall_samples`      | 连续多少次采样基本不动，才判定为 stall/堵转。当前 5 次。           |
+| `right_stall_samples`     | 右夹爪 stall 连续采样数。                            |
+| 变量                           | 含义                       |
+| ---------------------------- | ------------------------ |
+| `left_empty_grip_margin`     | 左夹爪判断“已经闭到底但没夹到物体”的额外余量。 |
+| `right_empty_grip_margin`    | 右夹爪空夹余量。                 |
+| `left_target_pos_tolerance`  | 判断左夹爪是否到达目标位置的容差。        |
+| `right_target_pos_tolerance` | 右夹爪目标位置容差。               |
+| 变量                     | 含义                               |
+| ---------------------- | -------------------------------- |
+| `left_timeout`         | 左夹爪一次抓取动作最长等待时间。超过 5 秒还没得出结果则超时。 |
+| `right_timeout`        | 右夹爪超时时间。                         |
+| `left_grip_done_wait`  | 左夹爪判断抓取动作完成后，再额外等待多久才进入机械臂下一动作。  |
+| `right_grip_done_wait` | 右夹爪抓取结束后的额外等待。                   |
+| 变量                     | 含义                        |
+| ---------------------- | ------------------------- |
+| `left_release_target`  | 左夹爪释放时目标位置。1000 基本对应完全打开。 |
+| `right_release_target` | 右夹爪释放目标位置。                |
+| `left_release_speed`   | 左夹爪张开速度。                  |
+| `right_release_speed`  | 右夹爪张开速度。                  |
+| `left_release_torque`  | 左夹爪执行张开动作时使用的力矩参数。        |
+| `right_release_torque` | 右夹爪释放力矩。                  |
+| `left_release_wait`    | 左夹爪认为释放完成后额外等待时间。         |
+| `right_release_wait`   | 右夹爪释放后的等待时间。              |

@@ -121,6 +121,7 @@ class RuntimeState:
     grasp_confirmed_label: str | None = None
     last_gripper_hand: str | None = None
     paused: bool = False
+    home_needs_sync: set[str] = field(default_factory=set)
 
 
 def is_pending(future: Future | None) -> bool:
@@ -146,6 +147,9 @@ class GraspDemoApp:
         self.gripper_future_command: str | None = None
         self.gripper_future_hand: str | None = None
         self.grasp_future: Future | None = None
+        self.manual_home_future: Future | None = None
+        self.manual_home_hand: str | None = None
+        self.gripper_interrupted = False
 
         sam_kwargs, flowpose_kwargs, capture_dir = build_runner_kwargs(args)
         self.sam_kwargs = sam_kwargs
@@ -223,6 +227,9 @@ class GraspDemoApp:
         self.camera.close()
 
         if self.ik_publisher is not None:
+            self.ik_publisher.request_stop()
+        self.action_executor.shutdown(wait=True, cancel_futures=True)
+        if self.ik_publisher is not None:
             self.ik_publisher.close()
         if self.ros_bridge is not None:
             self.ros_bridge.close()
@@ -233,12 +240,18 @@ class GraspDemoApp:
             print("[exit] waiting for queued inference job(s)...", flush=True)
 
         self.inference_executor.shutdown(wait=True, cancel_futures=True)
-        self.action_executor.shutdown(wait=True, cancel_futures=True)
         self.gripper_executor.shutdown(wait=True, cancel_futures=True)
         cv2.destroyAllWindows()
 
     def _collect_gripper_result(self) -> None:
         if self.gripper_future is None or not self.gripper_future.done():
+            return
+        if getattr(self, "gripper_interrupted", False):
+            # A grip completed during/after S must not trigger put or recovery.
+            self.gripper_future = None
+            self.gripper_future_command = None
+            self.gripper_future_hand = None
+            self.gripper_interrupted = False
             return
         try:
             status = self.gripper_future.result()
@@ -327,6 +340,7 @@ class GraspDemoApp:
             self.state.last_gripper_hand = hand
         target_label = hand if hand in {"left", "right"} else "both"
         self.state.status = f"Gripper {command} running hand={target_label}"
+        self.gripper_interrupted = False
         self.gripper_future_command = command
         self.gripper_future_hand = hand
         self.gripper_future = self.gripper_executor.submit(
@@ -774,6 +788,35 @@ class GraspDemoApp:
         )
         cv2.imshow(DASHBOARD_WINDOW, dashboard)
 
+    def publish_manual_home(self, hand: str) -> None:
+        if (self.grasp_future is not None or self.gripper_future is not None
+                or self.manual_home_future is not None or self.state.recovery_futures
+                or self.state.pipeline_stage is not PipelineStage.IDLE):
+            self.state.status = "HOME deferred: another robot action is still running"
+            return
+        self.manual_home_hand = hand
+        self.manual_home_future = self.action_executor.submit(
+            self.robot_actions.publish_home, hand,
+            fresh_measured_start=hand in self.state.home_needs_sync,
+        )
+        self.state.status = f"{hand} HOME: synchronizing measured start and returning"
+
+    def collect_manual_home_result(self) -> None:
+        if self.manual_home_future is None or not self.manual_home_future.done():
+            return
+        try:
+            status = self.manual_home_future.result()
+        except Exception as exc:  # noqa: BLE001
+            self.state.status = f"HOME deferred: {exc}"
+            print(f"[home] {self.state.status}", flush=True)
+        else:
+            if (not self.state.paused and self.ik_publisher is not None
+                    and not self.ik_publisher.stop_requested()):
+                self.state.status = status
+                self.state.home_needs_sync.discard(self.manual_home_hand)
+        self.manual_home_future = None
+        self.manual_home_hand = None
+
     def handle_key(self, key: int, bundle) -> bool:
         """Handle one keyboard command. Return False to exit the app."""
         key = normalize_key(key)
@@ -782,18 +825,37 @@ class GraspDemoApp:
             return False
 
         if key == KEY_PAUSE:
+            if self.state.paused and (
+                is_pending(self.grasp_future)
+                or is_pending(self.manual_home_future)
+                or any(is_pending(f) for f in self.state.recovery_futures)
+            ):
+                self.state.status = "Paused by S: waiting for interrupted actions to exit"
+                return True
             self.state.paused = not self.state.paused
             if self.state.paused:
+                self.state.home_needs_sync.update({"left", "right"})
+                # Resume must never restart the pre-pause automatic pipeline.
+                self.state.pipeline_stage = PipelineStage.IDLE
+                self.reset_retry()
+                self.gripper_interrupted = self.gripper_future is not None
+                self.state.grasp_confirmed = False
+                self.state.grasp_confirmed_hand = None
+                self.state.grasp_confirmed_label = None
                 if self.ik_publisher is not None:
                     self.ik_publisher.request_stop()
                 self.state.status = "Paused by S: target publishing stop requested"
             else:
+                # Consume an interrupted result while stop is still latched;
+                # it must not be interpreted as a fresh successful grasp.
+                self.collect_grasp_result()
+                self.collect_manual_home_result()
                 if self.ik_publisher is not None:
                     self.ik_publisher.clear_stop()
                 self.state.status = "Resumed by S"
             return True
 
-        if self.state.paused:
+        if self.state.paused or is_pending(self.manual_home_future):
             return True
 
         if key == KEY_CAPTURE:
@@ -817,11 +879,11 @@ class GraspDemoApp:
         elif key == KEY_RIGHT_HOME:
             self.state.last_gripper_hand = "right"
             if self.robot_actions is not None:
-                self.state.status = self.robot_actions.publish_home("right")
+                self.publish_manual_home("right")
         elif key == KEY_LEFT_HOME:
             self.state.last_gripper_hand = "left"
             if self.robot_actions is not None:
-                self.state.status = self.robot_actions.publish_home("left")
+                self.publish_manual_home("left")
         elif key == KEY_GRIP:
             self.send_gripper("grip")
         elif key == KEY_RELEASE:
@@ -848,6 +910,7 @@ class GraspDemoApp:
                 self.collect_inference_results()
                 self.advance_pipeline()
             self.collect_grasp_result()
+            self.collect_manual_home_result()
             self._collect_gripper_result()
             if not self.state.paused:
                 self.update_recovery()
