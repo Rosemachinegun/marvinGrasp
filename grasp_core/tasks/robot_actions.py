@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from grasp_core.tasks.grasp_request_ik import publish_latest_request_ik_target
 from grasp_core.tasks.put import execute_fixed_put_after_grasp
+from grasp_core.tasks.grasp_drop_detection import GraspDropMonitor, read_grasp_baseline
 from grasp_core.communication.gripper_signal import send_gripper_signal
 from grasp_core.core.pose_math import PickTemplateWaypoint
 from grasp_core.communication.request_ik_publisher import (
@@ -73,20 +74,41 @@ class RobotActionService:
         object_label: str | None = None,
     ) -> RobotActionResult:
         put_hand = hand or ("left" if self.args.ik_hand == "left" else "right")
-        result = execute_fixed_put_after_grasp(
-            self.ik_publisher,
-            put_hand,
-            self.args,
-            grasp_confirmed=grasp_confirmed,
-            object_type=object_label,
-            keep_put_pose=bool(getattr(self.args, "put_keep_pose", True)),
+        baseline = (
+            read_grasp_baseline(self.args, put_hand)
+            if bool(getattr(self.args, "grip_drop_detection", True))
+            else None
         )
+        monitor = None
+        if baseline is not None and self.ik_publisher is not None:
+            monitor = GraspDropMonitor(
+                self.args, put_hand, baseline, self.ik_publisher
+            )
+            monitor.start()
+        try:
+            result = execute_fixed_put_after_grasp(
+                self.ik_publisher,
+                put_hand,
+                self.args,
+                grasp_confirmed=grasp_confirmed,
+                object_type=object_label,
+                keep_put_pose=bool(getattr(self.args, "put_keep_pose", True)),
+            )
+        finally:
+            if monitor is not None:
+                monitor.close()
+        status = result.status
+        if monitor is not None and monitor.dropped:
+            status = (
+                f"GRASP_DROPPED hand={put_hand} baseline={baseline} "
+                f"pos={monitor.detected_position} target={monitor.threshold}"
+            )
         return RobotActionResult(
-            status=result.status,
+            status=status,
             grasp_confirmed=grasp_confirmed,
             grasp_hand=put_hand,
             object_label=object_label,
-            ok=result.ok,
+            ok=result.ok and not (monitor is not None and monitor.dropped),
         )
 
     def publish_home(self, hand: str, *, fresh_measured_start: bool = False) -> str:

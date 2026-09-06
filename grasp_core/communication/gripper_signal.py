@@ -393,7 +393,7 @@ def _send_single_gripper_signal(
     label: str,
 ) -> str:
     command = str(command).strip()
-    if command not in {"grip", "release", "check"}:
+    if command not in {"grip", "release", "check", "feedback"}:
         status = f"Invalid gripper command: {command!r}"
         print(f"[gripper:{label}] {status}", flush=True)
         return status

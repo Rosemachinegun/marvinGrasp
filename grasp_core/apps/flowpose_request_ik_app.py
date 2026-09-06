@@ -122,6 +122,8 @@ class RuntimeState:
     last_gripper_hand: str | None = None
     paused: bool = False
     home_needs_sync: set[str] = field(default_factory=set)
+    drop_recovery_futures: list[Future] = field(default_factory=list)
+    drop_regrasp_pending: bool = False
 
 
 def is_pending(future: Future | None) -> bool:
@@ -544,10 +546,74 @@ class GraspDemoApp:
             return
 
         self.state.status = result.status
-        if result.ok:
+        if "GRASP_DROPPED" in result.status:
+            self.start_drop_recovery(result.status, result.grasp_hand)
+        elif result.ok:
             self.state.grasp_confirmed = False
             self.state.grasp_confirmed_hand = None
             self.state.grasp_confirmed_label = None
+
+    def start_drop_recovery(self, status: str, hand: str | None) -> None:
+        """Apply S-style stop, return home smoothly, then schedule the A workflow."""
+        s = self.state
+        drop_hand = hand or s.grasp_confirmed_hand or (
+            "left" if self.args.ik_hand == "left" else "right"
+        )
+        s.paused = True
+        s.pipeline_stage = PipelineStage.IDLE
+        self.reset_retry()
+        s.grasp_confirmed = False
+        s.grasp_confirmed_hand = None
+        s.grasp_confirmed_label = None
+        s.home_needs_sync.add(drop_hand)
+        if self.ik_publisher is not None:
+            self.ik_publisher.request_stop()
+            # The put worker has observed the stop before returning.  Clear only
+            # for the measured-start HOME trajectory while the UI stays paused.
+            self.ik_publisher.clear_stop()
+        s.drop_recovery_futures = [
+            self.action_executor.submit(
+                self.robot_actions.publish_home,
+                drop_hand,
+                fresh_measured_start=True,
+            ),
+            self.action_executor.submit(
+                self.robot_actions.send_gripper,
+                "release",
+                drop_hand,
+            ),
+        ]
+        s.status = f"Paused after drop; smoothly returning {drop_hand} home: {status}"
+        print(f"[grip_drop] {s.status}", flush=True)
+
+    def update_drop_recovery(self) -> None:
+        """Resume after drop recovery and arm the same workflow as pressing A."""
+        s = self.state
+        if not s.drop_recovery_futures:
+            return
+        if any(not future.done() for future in s.drop_recovery_futures):
+            return
+        failed = []
+        for future in s.drop_recovery_futures:
+            try:
+                print(f"[grip_drop] recovery result: {future.result()}", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                failed.append(str(exc))
+        s.drop_recovery_futures = []
+        if failed:
+            s.status = "Drop recovery failed; remaining paused: " + "; ".join(failed)
+            return
+        s.paused = False
+        s.home_needs_sync.clear()
+        s.drop_regrasp_pending = True
+        s.status = "Drop recovery complete; restarting A grasp pipeline"
+
+    def advance_drop_regrasp(self) -> None:
+        if not self.state.drop_regrasp_pending or self.state.paused:
+            return
+        self.state.drop_regrasp_pending = False
+        # This is the same capture -> SAM3 -> FlowPose -> grasp chain as KEY_CAPTURE.
+        self.start_pipeline(grasp_on_done=True)
 
     def start_grip_failure_recovery(
         self,
@@ -791,6 +857,7 @@ class GraspDemoApp:
     def publish_manual_home(self, hand: str) -> None:
         if (self.grasp_future is not None or self.gripper_future is not None
                 or self.manual_home_future is not None or self.state.recovery_futures
+                or self.state.drop_recovery_futures
                 or self.state.pipeline_stage is not PipelineStage.IDLE):
             self.state.status = "HOME deferred: another robot action is still running"
             return
@@ -829,6 +896,7 @@ class GraspDemoApp:
                 is_pending(self.grasp_future)
                 or is_pending(self.manual_home_future)
                 or any(is_pending(f) for f in self.state.recovery_futures)
+                or any(is_pending(f) for f in self.state.drop_recovery_futures)
             ):
                 self.state.status = "Paused by S: waiting for interrupted actions to exit"
                 return True
@@ -912,8 +980,10 @@ class GraspDemoApp:
             self.collect_grasp_result()
             self.collect_manual_home_result()
             self._collect_gripper_result()
+            self.update_drop_recovery()
             if not self.state.paused:
                 self.update_recovery()
+                self.advance_drop_regrasp()
            # self.advance_replan_state(bundle)
             self.render(bundle)
 

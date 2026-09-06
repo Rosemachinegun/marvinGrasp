@@ -55,6 +55,8 @@ class GripSignalDefaults:
     post_confirm_hold_sec: float = 0.0
     lift_hold_sec: float = 0.0
     retry_max_attempts: int = 1
+    drop_close_delta: int = 30
+    drop_poll_interval: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -630,6 +632,8 @@ def normalize_gripper_args(args: argparse.Namespace) -> argparse.Namespace:
         0.0,
     )
     args.grip_lift_hold_sec = max(float(args.grip_lift_hold_sec), 0.0)
+    args.grip_drop_close_delta = max(int(args.grip_drop_close_delta), 0)
+    args.grip_drop_poll_interval = max(float(args.grip_drop_poll_interval), 0.02)
     args.put_target_hold_sec = max(float(args.put_target_hold_sec), 0.0)
     args.put_home_hold_sec = max(float(args.put_home_hold_sec), 0.0)
     args.gripper_calibration_tolerance = max(
@@ -1152,6 +1156,24 @@ def parse_args() -> argparse.Namespace:
         "--grip-signal-token",
         default=None,
         help="Optional token for grip_signal_receiver.py; messages become '<token> <command>'.",
+    )
+    parser.add_argument(
+        "--grip-drop-detection",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Detect a dropped object from extra gripper closing during transport.",
+    )
+    parser.add_argument(
+        "--grip-drop-close-delta",
+        type=int,
+        default=GRIP_SIGNAL_DEFAULTS.drop_close_delta,
+        help="Closing-position change beyond the successful-grasp baseline that means drop.",
+    )
+    parser.add_argument(
+        "--grip-drop-poll-interval",
+        type=float,
+        default=GRIP_SIGNAL_DEFAULTS.drop_poll_interval,
+        help="Seconds between gripper position samples during transport to put.",
     )
     parser.add_argument(
         "--gripper-server",
