@@ -56,10 +56,12 @@ from grasp_core.core.robot_target_pose import (  # noqa: E402
 from grasp_core.core.pose_math import select_ik_hand  # noqa: E402
 from grasp_core.tasks.robot_actions import (  # noqa: E402
     RobotActionService,
+    action_failed,
     grip_confirmed,
     grip_failed_min_limit,
     grip_success_hand,
 )
+from grasp_core.tasks.ribbon_policy import assume_grasp_success  # noqa: E402
 from grasp_core.planning.tool_pick_templates import load_tool_pick_templates  # noqa: E402
 
 
@@ -123,6 +125,8 @@ class RuntimeState:
     paused: bool = False
     home_needs_sync: set[str] = field(default_factory=set)
     drop_recovery_futures: list[Future] = field(default_factory=list)
+    drop_recovery_hand: str | None = None
+    drop_recovery_cancelled: bool = False
     drop_regrasp_pending: bool = False
 
 
@@ -263,7 +267,13 @@ class GraspDemoApp:
         command = self.gripper_future_command
         hand = self.gripper_future_hand
         if command == "grip":
-            if grip_failed_min_limit(status):
+            object_label = self.current_target_label()
+            assumed_success = assume_grasp_success(object_label)
+            non_contact_failure = grip_failed_min_limit(status)
+            accepted = not action_failed(status) or (
+                assumed_success and non_contact_failure
+            )
+            if non_contact_failure and not assumed_success:
                 failed_hand = (
                     hand
                     if hand in {"left", "right"}
@@ -283,12 +293,18 @@ class GraspDemoApp:
                 )
                 return
 
-            if grip_confirmed(status) and hand in {"left", "right"}:
+            if (
+                (grip_confirmed(status) or assumed_success)
+                and accepted
+                and hand in {"left", "right"}
+            ):
                 self.state.grasp_confirmed = True
                 self.state.grasp_confirmed_hand = (
-                    grip_success_hand(status) or self.state.last_gripper_hand
+                    grip_success_hand(status)
+                    or (hand if hand in {"left", "right"} else None)
+                    or self.state.last_gripper_hand
                 )
-                self.state.grasp_confirmed_label = self.current_target_label()
+                self.state.grasp_confirmed_label = object_label
                 self.state.last_gripper_hand = self.state.grasp_confirmed_hand
                 self.auto_put_after_confirmed_grasp()
             else:
@@ -556,35 +572,60 @@ class GraspDemoApp:
     def start_drop_recovery(self, status: str, hand: str | None) -> None:
         """Apply S-style stop, return home smoothly, then schedule the A workflow."""
         s = self.state
+        if s.drop_recovery_futures:
+            return
         drop_hand = hand or s.grasp_confirmed_hand or (
             "left" if self.args.ik_hand == "left" else "right"
         )
         s.paused = True
+        s.drop_regrasp_pending = False
+        s.drop_recovery_cancelled = False
+        s.drop_recovery_hand = drop_hand
         s.pipeline_stage = PipelineStage.IDLE
         self.reset_retry()
         s.grasp_confirmed = False
         s.grasp_confirmed_hand = None
         s.grasp_confirmed_label = None
         s.home_needs_sync.add(drop_hand)
-        if self.ik_publisher is not None:
-            self.ik_publisher.request_stop()
-            # The put worker has observed the stop before returning.  Clear only
-            # for the measured-start HOME trajectory while the UI stays paused.
-            self.ik_publisher.clear_stop()
+        self.gripper_interrupted = self.gripper_future is not None
+        if self.ik_publisher is None or self.robot_actions is None:
+            s.status = "Drop recovery failed; robot publisher unavailable; remaining paused"
+            return
+        generation = self.ik_publisher.request_stop()
+        # Put has returned before this method is called. Drain any other old
+        # actions before releasing, measuring, or permitting HOME publication.
+        previous_actions = tuple(f for f in (
+            self.grasp_future, self.manual_home_future, self.gripper_future,
+            *s.recovery_futures,
+        ) if f is not None)
         s.drop_recovery_futures = [
             self.action_executor.submit(
-                self.robot_actions.publish_home,
-                drop_hand,
-                fresh_measured_start=True,
-            ),
-            self.action_executor.submit(
-                self.robot_actions.send_gripper,
-                "release",
-                drop_hand,
+                self._recover_dropped_hand, drop_hand, generation, previous_actions,
             ),
         ]
-        s.status = f"Paused after drop; smoothly returning {drop_hand} home: {status}"
+        s.status = f"Paused after drop; waiting for {drop_hand} measured HOME start: {status}"
         print(f"[grip_drop] {s.status}", flush=True)
+
+    def _recover_dropped_hand(
+        self, hand: str, generation: int, previous_actions: tuple[Future, ...],
+    ) -> str:
+        for future in previous_actions:
+            try:
+                future.result()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[grip_drop] interrupted action exited: {exc}", flush=True)
+        if self.ik_publisher.stop_generation() != generation:
+            raise RuntimeError("drop HOME cancelled by a newer stop request")
+        print(f"[grip_drop] old actions exited; releasing {hand}; stop remains latched", flush=True)
+        # Release can change the load and the actual tool pose. Complete it
+        # before the same settled measured-FK read used by manual H/J.
+        release_status = self.robot_actions.send_gripper("release", hand)
+        if action_failed(release_status):
+            raise RuntimeError(f"drop release failed: {release_status}")
+        print(f"[grip_drop] {hand} released; waiting for settled measured FK before HOME", flush=True)
+        return self.robot_actions.publish_home(
+            hand, fresh_measured_start=True, resume_stop_generation=generation,
+        )
 
     def update_drop_recovery(self) -> None:
         """Resume after drop recovery and arm the same workflow as pressing A."""
@@ -600,11 +641,17 @@ class GraspDemoApp:
             except Exception as exc:  # noqa: BLE001
                 failed.append(str(exc))
         s.drop_recovery_futures = []
-        if failed:
-            s.status = "Drop recovery failed; remaining paused: " + "; ".join(failed)
+        s.recovery_futures = [f for f in s.recovery_futures if not f.done()]
+        if failed or s.drop_recovery_cancelled or (
+            self.ik_publisher is not None and self.ik_publisher.stop_requested()
+        ):
+            if self.ik_publisher is not None:
+                self.ik_publisher.request_stop()
+            s.status = "Drop recovery failed/cancelled; remaining paused: " + "; ".join(failed)
             return
         s.paused = False
-        s.home_needs_sync.clear()
+        s.home_needs_sync.discard(s.drop_recovery_hand)
+        s.drop_recovery_hand = None
         s.drop_regrasp_pending = True
         s.status = "Drop recovery complete; restarting A grasp pipeline"
 
@@ -892,6 +939,14 @@ class GraspDemoApp:
             return False
 
         if key == KEY_PAUSE:
+            if self.state.drop_recovery_futures:
+                self.state.drop_recovery_cancelled = True
+                self.state.drop_regrasp_pending = False
+                self.state.paused = True
+                if self.ik_publisher is not None:
+                    self.ik_publisher.request_stop()
+                self.state.status = "Paused by S: drop HOME cancellation requested"
+                return True
             if self.state.paused and (
                 is_pending(self.grasp_future)
                 or is_pending(self.manual_home_future)

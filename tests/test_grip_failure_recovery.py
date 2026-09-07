@@ -6,6 +6,7 @@ import pytest
 
 from grasp_core.apps.flowpose_request_ik_app import GraspDemoApp, RetryStage
 from grasp_core.tasks.grasp_request_ik import GripFailedMinLimit, execute_grip_at_pose
+from grasp_core.core.robot_target_pose import TargetObjectPose
 
 
 class ImmediateExecutor:
@@ -126,3 +127,58 @@ def test_grip_failed_min_limit_alias_raises_without_confirming(monkeypatch) -> N
         )
 
     assert confirmed == []
+
+
+def test_ribbon_accepts_min_limit_as_success(monkeypatch) -> None:
+    confirmed = []
+    args = Namespace(grip_settle_sec=0.0, grip_post_confirm_hold_sec=0.0)
+    monkeypatch.setattr(
+        "grasp_core.tasks.grasp_request_ik.gripper_receiver_args",
+        lambda args, hand: [
+            ("left", Namespace(grip_signal_port=55551, gripper_server="mock"))
+        ],
+    )
+    monkeypatch.setattr(
+        "grasp_core.tasks.grasp_request_ik.send_gripper_signal",
+        lambda command, args, hand: "OK GRIP_FAILED_MIN_LIMIT grip done exit_code=2",
+    )
+
+    execute_grip_at_pose(
+        FakePublisher(),
+        "left",
+        np.array([0.1, 0.2, 0.3]),
+        (0.0, 0.0, 0.0, 1.0),
+        args,
+        assume_success=True,
+        on_grip_confirmed=lambda hand, status: confirmed.append((hand, status)),
+    )
+
+    assert confirmed == [
+        ("left", "OK GRIP_FAILED_MIN_LIMIT grip done exit_code=2")
+    ]
+
+
+def test_manual_ribbon_grip_skips_failure_recovery() -> None:
+    app = GraspDemoApp.__new__(GraspDemoApp)
+    app.args = Namespace(ik_hand="auto")
+    app.state = app_state()
+    identity = np.eye(4)
+    app.state.base_targets = [
+        TargetObjectPose("ribbon_1", "ribbon_1", identity, identity)
+    ]
+    app.gripper_future = Future()
+    app.gripper_future.set_result(
+        "OK GRASP_FAILED_MIN_LIMIT grip done exit_code=2 hand=left"
+    )
+    app.gripper_future_command = "grip"
+    app.gripper_future_hand = "left"
+    app.auto_put_after_confirmed_grasp = lambda: None
+    app.start_grip_failure_recovery = lambda *args, **kwargs: pytest.fail(
+        "ribbon must not enter failure recovery"
+    )
+
+    app._collect_gripper_result()
+
+    assert app.state.grasp_confirmed
+    assert app.state.grasp_confirmed_hand == "left"
+    assert app.state.grasp_confirmed_label == "ribbon_1"

@@ -45,6 +45,7 @@ from grasp_core.communication.measured_home_pose import (
     _running_colcon_install,
 )
 from grasp_core.communication.request_ik_publisher import RequestIkTargetPublisher
+from grasp_core.communication.request_ik_publisher import trajectory_sample_periods
 from grasp_core.core.pose_math import quaternion_angle_rad
 
 
@@ -113,19 +114,48 @@ def test_actual_first_home_command_is_measured_pose_not_cached_endpoint(mode, mo
     pub._last_targets = {'left': (np.ones(3)*4, Q)}
     start = np.array([0.25, 0.25, 0.81])
     end = start + np.array([0.1, 0., 0.])
-    monkeypatch.setattr('grasp_core.communication.request_ik_publisher.time.sleep', lambda _: None)
+    sleeps = []
+    monkeypatch.setattr(
+        'grasp_core.communication.request_ik_publisher.time.sleep', sleeps.append,
+    )
     pub.publish_smooth_target('left', end, Q, start_position_xyz=start,
                               start_orientation_xyzw=(0., 0., 0., -1.),
-                              max_step_m=.003, max_step_deg=1., include_start=True)
+                              max_step_m=.003, max_step_deg=1., include_start=True,
+                              startup_slowdown=True)
     if mode == 'pose_stream':
         samples = [(c.args[1], c.args[2]) for c in pub.client.publish_pose.call_args_list]
     else:
         samples = pub.client.publish_pose_trajectory.call_args.args[1]
     np.testing.assert_allclose(samples[0][0], start)
     np.testing.assert_allclose(samples[-1][0], end)
+    if mode == 'pose_stream':
+        assert sleeps[0] == pytest.approx(.25)
+    else:
+        periods = pub.client.publish_pose_trajectory.call_args.kwargs[
+            'sample_periods_sec'
+        ]
+        assert periods[0] == pytest.approx(.25)
     for (p0, q0), (p1, q1) in zip(samples, samples[1:]):
         assert np.linalg.norm(p1-p0) <= .003 + 1e-9
         assert quaternion_angle_rad(q0, q1) <= np.deg2rad(1.) + 1e-9
+
+
+def test_interrupted_home_timing_holds_then_accelerates_smoothly():
+    periods = trajectory_sample_periods(
+        40, .02, startup_slowdown=True, terminal_slowdown=False,
+    )
+    assert periods[0] == pytest.approx(.25)
+    ramp = periods[1:17]
+    assert ramp[0] < periods[0]
+    assert all(current >= following for current, following in zip(ramp, ramp[1:]))
+    assert ramp[-1] == pytest.approx(.02)
+    assert periods[17:] == pytest.approx([.02] * 23)
+
+
+def test_normal_home_timing_is_unchanged():
+    assert trajectory_sample_periods(
+        20, .02, startup_slowdown=False, terminal_slowdown=False,
+    ) == pytest.approx([.02] * 20)
 
 
 def make_app():

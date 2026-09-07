@@ -106,6 +106,8 @@ class RequestIkTargetPublisher:
         self._joint_trajectory_csv_time_s = 0.0
         self._joint_trajectory_csv_default_hand: str | None = None
         self._stop_event = threading.Event()
+        self._stop_lock = threading.Lock()
+        self._stop_generation = 0
 
         self.client = Ros2PoseTargetPublisher(
             left_topic=left_topic,
@@ -120,12 +122,25 @@ class RequestIkTargetPublisher:
         self.finish_joint_trajectory_csv_recording()
         self.client.close()
 
-    def request_stop(self) -> None:
-        self._stop_event.set()
+    def request_stop(self) -> int:
+        with self._stop_lock:
+            self._stop_generation += 1
+            generation = self._stop_generation
+            self._stop_event.set()
         self.node.get_logger().warning("request_ik target publishing stop requested")
+        return generation
 
-    def clear_stop(self) -> None:
-        self._stop_event.clear()
+    def clear_stop(self, *, expected_generation: int | None = None) -> bool:
+        with self._stop_lock:
+            if (expected_generation is not None
+                    and expected_generation != self._stop_generation):
+                return False
+            self._stop_event.clear()
+            return True
+
+    def stop_generation(self) -> int:
+        with self._stop_lock:
+            return self._stop_generation
 
     def stop_requested(self) -> bool:
         return self._stop_event.is_set()
@@ -221,6 +236,7 @@ class RequestIkTargetPublisher:
         final_hold_sec: float | None = None,
         terminal_slowdown: bool = False,
         include_start: bool = False,
+        startup_slowdown: bool = False,
     ) -> int:
         topic = self.client.topic_for_hand(hand)
         end_position = checked_position(position_xyz)
@@ -278,6 +294,7 @@ class RequestIkTargetPublisher:
                 final_orientation=end_orientation,
                 final_hold_sec=final_hold_sec,
                 terminal_slowdown=terminal_slowdown,
+                startup_slowdown=startup_slowdown,
             )
             self._remember_target(hand, end_position, end_orientation)
             self.node.get_logger().info(
@@ -288,10 +305,11 @@ class RequestIkTargetPublisher:
             )
             return count
 
-        sample_periods_sec = terminal_sample_periods(
+        sample_periods_sec = trajectory_sample_periods(
             len(trajectory.samples),
             period_sec,
-            enabled=terminal_slowdown,
+            startup_slowdown=startup_slowdown,
+            terminal_slowdown=terminal_slowdown,
         )
         for (position, orientation), sample_period_sec in zip(
             trajectory.samples,
@@ -565,6 +583,7 @@ class RequestIkTargetPublisher:
         hold_final: bool = True,
         final_hold_sec: float | None = None,
         terminal_slowdown: bool = False,
+        startup_slowdown: bool = False,
     ) -> int:
         if not samples:
             return 0
@@ -573,10 +592,11 @@ class RequestIkTargetPublisher:
         period_sec = 1.0 / self.publish_rate_hz
         for position, orientation in samples:
             self._append_trajectory_sample(position, orientation)
-        sample_periods_sec = terminal_sample_periods(
+        sample_periods_sec = trajectory_sample_periods(
             len(samples),
             period_sec,
-            enabled=terminal_slowdown,
+            startup_slowdown=startup_slowdown,
+            terminal_slowdown=terminal_slowdown,
         )
         count = self.client.publish_pose_trajectory(
             hand,
@@ -1222,6 +1242,7 @@ def publish_home_request_ik_target(
         final_hold_sec=final_hold_sec,
         terminal_slowdown=True,
         include_start=start_pose is not None,
+        startup_slowdown=start_pose is not None,
     )
     if start_pose is not None and (count <= 0 or publisher.stop_requested()):
         raise RuntimeError("HOME interrupted before completion; measured sync still required")
@@ -1259,6 +1280,7 @@ def publish_request_ik_target(
     final_hold_sec: float | None = None,
     terminal_slowdown: bool = False,
     include_start: bool = False,
+    startup_slowdown: bool = False,
 ) -> int:
     if not bool(getattr(args, "target_smooth_trajectory", True)):
         return publisher.publish_target(
@@ -1280,6 +1302,7 @@ def publish_request_ik_target(
         final_hold_sec=final_hold_sec,
         terminal_slowdown=terminal_slowdown,
         include_start=include_start,
+        startup_slowdown=startup_slowdown,
     )
 
 
@@ -1360,6 +1383,43 @@ def terminal_sample_periods(
         ratio = float(tail_index + 1) / float(tail)
         scale = 1.0 + (max_scale - 1.0) * ratio * ratio
         periods[count - tail + tail_index] = base_period * scale
+    return periods
+
+
+def trajectory_sample_periods(
+    sample_count: int,
+    base_period_sec: float,
+    *,
+    startup_slowdown: bool = False,
+    terminal_slowdown: bool = False,
+    startup_hold_sec: float = 0.25,
+    startup_ramp_count: int = 16,
+    startup_max_scale: float = 4.0,
+) -> list[float]:
+    """Build timing with a stationary handover and gentle initial acceleration.
+
+    Sample zero is the fresh measured pose for post-interruption HOME. Holding
+    it briefly lets request_ik settle its target before Cartesian motion begins.
+    The following periods then decrease smoothly to the normal period. Spatial
+    interpolation, speed limits and quaternion shortest-path remain unchanged.
+    """
+    periods = terminal_sample_periods(
+        sample_count,
+        base_period_sec,
+        enabled=terminal_slowdown,
+    )
+    if not startup_slowdown or not periods:
+        return periods
+
+    base_period = max(float(base_period_sec), 1e-4)
+    periods[0] = max(float(startup_hold_sec), base_period)
+    ramp = min(max(int(startup_ramp_count), 0), max(len(periods) - 1, 0))
+    max_scale = max(float(startup_max_scale), 1.0)
+    for ramp_index in range(ramp):
+        ratio = float(ramp_index + 1) / float(max(ramp, 1))
+        scale = 1.0 + (max_scale - 1.0) * (1.0 - ratio) ** 2
+        sample_index = ramp_index + 1
+        periods[sample_index] = max(periods[sample_index], base_period * scale)
     return periods
 
 

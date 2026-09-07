@@ -22,6 +22,7 @@ from grasp_core.communication.gripper_signal import (
     send_gripper_signal,
 )
 from grasp_core.planning.grasp_pose import make_gripper_target_pose
+from grasp_core.tasks.ribbon_policy import assume_grasp_success
 from grasp_core.core.pose_math import (
     PickTemplateWaypoint,
     PoseWaypoint,
@@ -104,6 +105,13 @@ def publish_latest_request_ik_target(
     index = min(max(int(args.ik_target_index), 0), len(targets) - 1)
     target = targets[index]
     hand = select_ik_hand(target.base_xyz, args.ik_hand)
+    accept_without_contact_check = assume_grasp_success(target.label)
+    if accept_without_contact_check:
+        print(
+            "[grip] ribbon policy active: skipping grasp contact/min-limit "
+            f"check for label={target.label!r}",
+            flush=True,
+        )
     grip_result: dict[str, Any] = {"confirmed": False, "hand": None, "status": ""}
     start_position, start_orientation, start_source = resolve_grasp_start_pose(
         publisher,
@@ -147,6 +155,7 @@ def publish_latest_request_ik_target(
                 grip_waypoint_index,
                 pick_waypoints,
                 args,
+                assume_success=accept_without_contact_check,
                 on_grip_confirmed=lambda grip_hand, grip_status: grip_result.update(
                     confirmed=True,
                     hand=grip_hand,
@@ -262,6 +271,7 @@ def publish_latest_request_ik_target(
                 position,
                 orientation,
                 args,
+                assume_success=accept_without_contact_check,
                 on_grip_confirmed=lambda grip_hand, grip_status: grip_result.update(
                     confirmed=True,
                     hand=grip_hand,
@@ -352,6 +362,7 @@ def make_grip_waypoint_callbacks(
     waypoints: list[PickTemplateWaypoint],
     args: argparse.Namespace,
     *,
+    assume_success: bool = False,
     on_grip_confirmed: GripConfirmedCallback | None = None,
 ) -> dict[int, WaypointCallback]:
     if grip_waypoint_index is None:
@@ -375,6 +386,7 @@ def make_grip_waypoint_callbacks(
             position,
             orientation,
             args,
+            assume_success=assume_success,
             on_grip_confirmed=on_grip_confirmed,
         )
 
@@ -388,6 +400,7 @@ def execute_grip_at_pose(
     orientation: tuple[float, float, float, float],
     args: argparse.Namespace,
     *,
+    assume_success: bool = False,
     on_grip_confirmed: GripConfirmedCallback | None = None,
 ) -> int:
     settle_sec = max(
@@ -423,7 +436,10 @@ def execute_grip_at_pose(
     print(f"[grip] sending close command hand={hand} endpoint={endpoint_text}", flush=True)
     gripper_status = send_gripper_signal("grip", args, hand=hand)
     print(f"[grip] close command result hand={hand}: {gripper_status}", flush=True)
-    if any(token in gripper_status for token in GRIP_MIN_LIMIT_TOKENS):
+    if (
+        not assume_success
+        and any(token in gripper_status for token in GRIP_MIN_LIMIT_TOKENS)
+    ):
         raise GripFailedMinLimit(gripper_status)
     if "ERR " in gripper_status or "failed exit_code=" in gripper_status:
         raise GripCommandFailed(gripper_status)

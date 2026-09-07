@@ -7,6 +7,10 @@ import argparse
 from dataclasses import dataclass
 
 from grasp_core.tasks.grasp_request_ik import publish_latest_request_ik_target
+from grasp_core.tasks.ribbon_policy import (
+    assume_grasp_success,
+    skip_grasp_drop_detection,
+)
 from grasp_core.tasks.put import execute_fixed_put_after_grasp
 from grasp_core.tasks.grasp_drop_detection import GraspDropMonitor, read_grasp_baseline
 from grasp_core.communication.gripper_signal import send_gripper_signal
@@ -56,14 +60,29 @@ class RobotActionService:
             self.pick_templates,
             self.args,
         )
+        assumed_success = (
+            selected_target is not None
+            and assume_grasp_success(selected_target.label)
+        )
+        non_contact_failure = grip_failed_min_limit(status)
+        accepted = not action_failed(status) or (
+            assumed_success and non_contact_failure
+        )
         return RobotActionResult(
             status=status,
-            failed_min_limit=grip_failed_min_limit(status),
+            failed_min_limit=not assumed_success and non_contact_failure,
             failed_hand=grip_failure_hand(status, str(self.args.ik_hand)),
-            grasp_confirmed=grip_confirmed(status),
-            grasp_hand=grip_success_hand(status),
+            grasp_confirmed=(assumed_success and accepted) or grip_confirmed(status),
+            grasp_hand=(
+                grip_success_hand(status)
+                or (
+                    grip_failure_hand(status, str(self.args.ik_hand))
+                    if assumed_success
+                    else None
+                )
+            ),
             object_label=selected_target.label if selected_target is not None else None,
-            ok=not action_failed(status),
+            ok=accepted,
         )
 
     def publish_put(
@@ -74,9 +93,13 @@ class RobotActionService:
         object_label: str | None = None,
     ) -> RobotActionResult:
         put_hand = hand or ("left" if self.args.ik_hand == "left" else "right")
+        drop_detection_enabled = (
+            bool(getattr(self.args, "grip_drop_detection", True))
+            and not skip_grasp_drop_detection(object_label)
+        )
         baseline = (
             read_grasp_baseline(self.args, put_hand)
-            if bool(getattr(self.args, "grip_drop_detection", True))
+            if drop_detection_enabled
             else None
         )
         monitor = None
@@ -111,17 +134,33 @@ class RobotActionService:
             ok=result.ok and not (monitor is not None and monitor.dropped),
         )
 
-    def publish_home(self, hand: str, *, fresh_measured_start: bool = False) -> str:
+    def publish_home(
+        self, hand: str, *, fresh_measured_start: bool = False,
+        resume_stop_generation: int | None = None,
+    ) -> str:
         home_xyz = self.args.left_home_xyz if hand == "left" else self.args.right_home_xyz
         start = None
+        if resume_stop_generation is not None:
+            fresh_measured_start = True
         if fresh_measured_start:
             if not bool(getattr(self.args, "target_smooth_trajectory", True)):
                 raise RuntimeError("post-pause HOME requires target_smooth_trajectory")
             if self.ik_publisher is None:
                 raise RuntimeError("measured pose publisher unavailable")
+            # Automatic recovery keeps publishing stopped throughout settling.
+            # A later S invalidates this recovery, even before HOME has started.
+            cancelled = self.ik_publisher.stop_requested
+            if resume_stop_generation is not None:
+                cancelled = lambda: (
+                    self.ik_publisher.stop_generation() != resume_stop_generation
+                )
             start = self.ik_publisher.client.wait_for_settled_tool_pose(
-                hand, cancelled=self.ik_publisher.stop_requested,
+                hand, cancelled=cancelled,
             )
+            if resume_stop_generation is not None and not self.ik_publisher.clear_stop(
+                expected_generation=resume_stop_generation,
+            ):
+                raise RuntimeError("HOME cancelled by a newer stop request")
             if self.ik_publisher.stop_requested():
                 raise RuntimeError("HOME interrupted by S")
         return publish_home_request_ik_target(
