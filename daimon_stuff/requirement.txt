@@ -1,0 +1,25 @@
+# Runtime dependencies for the daimon_stuff tools.
+#
+# This file covers the common gripper, camera, and tactile CPU/base workflows.
+# GPU/TensorRT-specific tactile dependencies are intentionally kept in:
+#   dm_gripper_tac_py/requirements-gpu.txt
+
+setuptools
+wheel
+
+# gRPC / protobuf clients
+grpcio>=1.75.1
+grpcio-tools>=1.70.0
+protobuf>=6.32.1
+
+# Camera viewer / image processing
+numpy>=1.20
+opencv-contrib-python>=4.6.0.66,<=4.11.0.84
+
+# Tactile SDK base dependencies
+h5py>=3.8
+cryptography>=41.0.0
+scipy>=1.7.3,<=1.15.3
+pyudev
+onnxruntime-gpu>=1.19.0,<1.23.0
+dearpygui
