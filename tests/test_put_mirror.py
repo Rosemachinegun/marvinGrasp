@@ -7,11 +7,13 @@ from grasp_core.core.pose_math import (
     quaternion_to_rotation_matrix,
 )
 from grasp_core.tasks.put import (
+    cubic_bezier_position,
     execute_fixed_put_after_grasp,
     fixed_put_xyz_for_hand,
     humanlike_put_waypoints,
     position_for_home,
     put_outward_z_axis_orientation,
+    smooth_bezier_arc_waypoints,
 )
 
 
@@ -70,6 +72,64 @@ def test_put_waypoints_are_mirrored_from_mirrored_starts() -> None:
             left_position,
             np.array([right_position[0], -right_position[1], right_position[2]]),
         )
+
+
+def test_put_waypoints_form_one_smooth_bezier_arc() -> None:
+    args = Namespace(home_safe_z_m=0.95)
+    orientation = (0.0, 0.0, 0.0, 1.0)
+    start = np.array([0.20, -0.10, 0.82])
+    end = np.array(fixed_put_xyz_for_hand("right"))
+    publisher = FakePublisher((start, orientation))
+
+    waypoints = humanlike_put_waypoints(
+        publisher, "right", end, orientation, args,
+    )
+
+    assert len(waypoints) >= 16
+    np.testing.assert_allclose(waypoints[-1][0], end)
+    # The curve leaves upward and arrives downward instead of turning at a
+    # lift/pre-put waypoint.
+    assert waypoints[0][0][2] > start[2]
+    assert waypoints[-2][0][2] > end[2]
+    assert max(position[2] for position, _ in waypoints) >= 0.949
+    sampled_positions = np.vstack((start, [position for position, _ in waypoints]))
+    step_lengths = np.linalg.norm(np.diff(sampled_positions, axis=0), axis=1)
+    assert np.std(step_lengths) / np.mean(step_lengths) < 0.01
+
+
+def test_cubic_bezier_hits_both_endpoints() -> None:
+    points = [np.array([float(i), 0.0, 0.0]) for i in range(4)]
+
+    np.testing.assert_allclose(cubic_bezier_position(*points, 0.0), points[0])
+    np.testing.assert_allclose(cubic_bezier_position(*points, 1.0), points[-1])
+
+
+def test_non_lifting_bezier_grasp_path_stays_between_endpoint_heights() -> None:
+    start = np.array([0.25, -0.25, 0.81])
+    end = np.array([0.42, -0.18, 0.70])
+    waypoints = smooth_bezier_arc_waypoints(
+        start,
+        (0.0, 0.0, 0.0, 1.0),
+        end,
+        (0.0, 0.0, 0.0, 1.0),
+        Namespace(),
+        lift_arc=False,
+    )
+
+    z_values = np.asarray([position[2] for position, _ in waypoints])
+    assert np.all(z_values <= start[2] + 1e-12)
+    assert np.all(z_values >= end[2] - 1e-12)
+    assert np.all(np.diff(z_values) <= 1e-12)
+    positions = np.asarray([position for position, _ in waypoints])
+    half_height = 0.5 * (start[2] + end[2])
+    half_height_index = int(np.argmin(np.abs(positions[:, 2] - half_height)))
+    lateral_total = float(np.linalg.norm(end[:2] - start[:2]))
+    lateral_remaining = float(
+        np.linalg.norm(end[:2] - positions[half_height_index, :2])
+    )
+    # By the time the gripper enters the lower half of the descent it is
+    # already nearly above the object, rather than sweeping sideways into it.
+    assert lateral_remaining < 0.2 * lateral_total
 
 
 def test_home_targets_are_mirrored() -> None:

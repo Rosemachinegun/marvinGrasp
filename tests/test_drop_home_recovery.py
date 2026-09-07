@@ -34,7 +34,8 @@ def app_for_drop(monkeypatch):
     publisher.node = Mock()
     publisher.client = Mock()
     args = SimpleNamespace(ik_hand="right", right_home_xyz=(.25, -.25, .81),
-                           left_home_xyz=(.25, .25, .81))
+                           left_home_xyz=(.25, .25, .81),
+                           ik_orientation_quat=(0., 0., 0., 1.))
     service = robot_actions.RobotActionService(
         args=args, ik_publisher=publisher, pick_templates={},
     )
@@ -80,6 +81,8 @@ def test_drop_keeps_stop_until_release_and_fresh_measured_start(monkeypatch, han
     app.action_executor.run()
     assert not publisher.stop_requested()
     assert publish.call_args.kwargs["start_pose"] is measured
+    expected = (0.45, 0.20, 0.75) if hand == "left" else (0.45, -0.20, 0.75)
+    assert publish.call_args.args[2] == expected
     app.update_drop_recovery()
     assert not app.state.paused
     assert app.state.drop_regrasp_pending

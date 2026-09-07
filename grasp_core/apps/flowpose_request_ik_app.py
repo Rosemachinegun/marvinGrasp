@@ -570,7 +570,7 @@ class GraspDemoApp:
             self.state.grasp_confirmed_label = None
 
     def start_drop_recovery(self, status: str, hand: str | None) -> None:
-        """Apply S-style stop, return home smoothly, then schedule the A workflow."""
+        """Apply S-style stop, move to recovery, then schedule the A workflow."""
         s = self.state
         if s.drop_recovery_futures:
             return
@@ -622,8 +622,8 @@ class GraspDemoApp:
         release_status = self.robot_actions.send_gripper("release", hand)
         if action_failed(release_status):
             raise RuntimeError(f"drop release failed: {release_status}")
-        print(f"[grip_drop] {hand} released; waiting for settled measured FK before HOME", flush=True)
-        return self.robot_actions.publish_home(
+        print(f"[grip_drop] {hand} released; waiting for settled measured FK before recovery", flush=True)
+        return self.robot_actions.publish_failure_recovery(
             hand, fresh_measured_start=True, resume_stop_generation=generation,
         )
 
@@ -668,7 +668,7 @@ class GraspDemoApp:
         *,
         failed_hand: str | None = None,
     ) -> None:
-        """Return the failed hand home and release the gripper in parallel."""
+        """Move the failed hand to recovery and release the gripper in parallel."""
         s = self.state
         s.pipeline_stage = PipelineStage.IDLE
 
@@ -691,7 +691,7 @@ class GraspDemoApp:
 
         s.recovery_futures = [
             self.action_executor.submit(
-                self.robot_actions.publish_home,
+                self.robot_actions.publish_failure_recovery,
                 hand,
             ),
             self.action_executor.submit(
@@ -711,7 +711,7 @@ class GraspDemoApp:
                 else f"retry limit reached ({max_attempts})"
             )
         )
-        s.status = f"Grip failed; returning {hand} home and releasing in parallel; {retry_text}"
+        s.status = f"Grip failed; moving {hand} to recovery and releasing in parallel; {retry_text}"
         print(f"[grip_retry] {s.status}", flush=True)
 
     def _collect_recovery_results(self) -> bool:

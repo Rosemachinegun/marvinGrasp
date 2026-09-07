@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 
+import numpy as np
+
 from grasp_core.tasks.grasp_request_ik import publish_latest_request_ik_target
 from grasp_core.tasks.ribbon_policy import (
     assume_grasp_success,
@@ -14,7 +16,11 @@ from grasp_core.tasks.ribbon_policy import (
 from grasp_core.tasks.put import execute_fixed_put_after_grasp
 from grasp_core.tasks.grasp_drop_detection import GraspDropMonitor, read_grasp_baseline
 from grasp_core.communication.gripper_signal import send_gripper_signal
-from grasp_core.core.pose_math import PickTemplateWaypoint
+from grasp_core.core.pose_math import (
+    PickTemplateWaypoint,
+    ik_wrist_orientation_quat,
+    quaternion_angle_rad,
+)
 from grasp_core.communication.request_ik_publisher import (
     RequestIkTargetPublisher,
     publish_home_request_ik_target,
@@ -23,6 +29,10 @@ from grasp_core.core.robot_target_pose import TargetObjectPose
 
 
 GRIP_MIN_LIMIT_TOKENS = ("GRASP_FAILED_MIN_LIMIT", "GRIP_FAILED_MIN_LIMIT")
+FAILURE_RECOVERY_XYZ = {
+    "left": (0.36, 0.14, 0.74),
+    "right": (0.36, -0.14, 0.74),
+}
 
 
 @dataclass(frozen=True)
@@ -137,8 +147,13 @@ class RobotActionService:
     def publish_home(
         self, hand: str, *, fresh_measured_start: bool = False,
         resume_stop_generation: int | None = None,
+        target_xyz: tuple[float, float, float] | None = None,
     ) -> str:
-        home_xyz = self.args.left_home_xyz if hand == "left" else self.args.right_home_xyz
+        home_xyz = target_xyz or (
+            self.args.left_home_xyz if hand == "left" else self.args.right_home_xyz
+        )
+        home_position = np.asarray(home_xyz, dtype=np.float64)
+        home_orientation = ik_wrist_orientation_quat(self.args, hand=hand)
         start = None
         if resume_stop_generation is not None:
             fresh_measured_start = True
@@ -157,18 +172,50 @@ class RobotActionService:
             start = self.ik_publisher.client.wait_for_settled_tool_pose(
                 hand, cancelled=cancelled,
             )
+            position_error_m = float(np.linalg.norm(start[0] - home_position))
+            angle_error_deg = float(np.rad2deg(
+                quaternion_angle_rad(start[1], home_orientation)
+            ))
+            position_tolerance_m = max(float(getattr(
+                self.args, "interrupted_home_position_tolerance_m", 0.006,
+            )), 0.0)
+            angle_tolerance_deg = max(float(getattr(
+                self.args, "interrupted_home_angle_tolerance_deg", 2.0,
+            )), 0.0)
             if resume_stop_generation is not None and not self.ik_publisher.clear_stop(
                 expected_generation=resume_stop_generation,
             ):
                 raise RuntimeError("HOME cancelled by a newer stop request")
             if self.ik_publisher.stop_requested():
                 raise RuntimeError("HOME interrupted by S")
+            if (position_error_m <= position_tolerance_m
+                    and angle_error_deg <= angle_tolerance_deg):
+                self.ik_publisher.synchronize_measured_target(hand, *start)
+                status = (
+                    f"{hand} already at HOME; no target published "
+                    f"(error={position_error_m * 1000.0:.2f}mm/"
+                    f"{angle_error_deg:.2f}deg)"
+                )
+                print(f"[request_ik_tester] {status}", flush=True)
+                return status
         return publish_home_request_ik_target(
             self.ik_publisher,
             hand,
             home_xyz,
             self.args,
             start_pose=start,
+        )
+
+    def publish_failure_recovery(
+        self, hand: str, *, fresh_measured_start: bool = False,
+        resume_stop_generation: int | None = None,
+    ) -> str:
+        """Move a failed grasping arm to its dedicated recovery point."""
+        return self.publish_home(
+            hand,
+            fresh_measured_start=fresh_measured_start,
+            resume_stop_generation=resume_stop_generation,
+            target_xyz=FAILURE_RECOVERY_XYZ[hand],
         )
 
     def send_gripper(self, command: str, hand: str | None = None) -> str:

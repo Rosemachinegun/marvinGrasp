@@ -1,6 +1,6 @@
 defaults:
   force_object_z: true
-  forced_object_z_m: 0.70
+  forced_object_z_m: 0.698
   pregrasp_distance_m: 0.05
   lift_distance_m: 0.08
   approach_axis: z

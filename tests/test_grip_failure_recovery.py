@@ -27,9 +27,9 @@ class FakeRobotActions:
     def __init__(self) -> None:
         self.calls = []
 
-    def publish_home(self, hand: str) -> str:
-        self.calls.append(("home", hand))
-        return f"{hand} home ok"
+    def publish_failure_recovery(self, hand: str) -> str:
+        self.calls.append(("recovery", hand))
+        return f"{hand} recovery ok"
 
     def send_gripper(self, command: str, hand: str | None = None) -> str:
         self.calls.append((command, hand))
@@ -54,8 +54,8 @@ def test_left_grip_failure_returns_home_even_when_retry_loop_disabled() -> None:
 
     assert app.state.retry_stage is RetryStage.RECOVERY
     assert app.state.retry_will_regrasp is False
-    assert app.robot_actions.calls == [("home", "left"), ("release", "left")]
-    assert "returning left home" in app.state.status
+    assert app.robot_actions.calls == [("recovery", "left"), ("release", "left")]
+    assert "moving left to recovery" in app.state.status
     assert "retry loop disabled" in app.state.status
 
 
@@ -82,8 +82,8 @@ def test_manual_right_grip_failure_returns_home() -> None:
     assert app.state.retry_stage is RetryStage.RECOVERY
     assert app.state.grasp_confirmed is False
     assert app.state.last_gripper_hand == "right"
-    assert app.robot_actions.calls == [("home", "right"), ("release", "right")]
-    assert "returning right home" in app.state.status
+    assert app.robot_actions.calls == [("recovery", "right"), ("release", "right")]
+    assert "moving right to recovery" in app.state.status
 
 
 def app_state():

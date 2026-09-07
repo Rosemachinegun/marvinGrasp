@@ -686,6 +686,18 @@ class RequestIkTargetPublisher:
         position, orientation = target
         return position.copy(), orientation
 
+    def synchronize_measured_target(
+        self,
+        hand: str,
+        position_xyz: np.ndarray,
+        orientation_xyzw: tuple[float, float, float, float],
+    ) -> None:
+        """Replace command history with a freshly measured IK-model pose."""
+        self._remember_target(hand, position_xyz, orientation_xyzw)
+        self.node.get_logger().info(
+            f"synchronized {hand} remembered target from measured FK"
+        )
+
     def last_published_trajectory(self) -> PublishedTrajectory | None:
         return self._last_published_trajectory
 
@@ -1317,6 +1329,7 @@ def publish_request_ik_path(
     on_after_waypoint: dict[int, WaypointCallback] | None = None,
     final_hold_sec: float | None = None,
     terminal_slowdown: bool = False,
+    min_steps: int | None = None,
 ) -> int:
     if not bool(getattr(args, "target_smooth_trajectory", True)):
         count = 0
@@ -1356,7 +1369,11 @@ def publish_request_ik_path(
         start_orientation_xyzw=start_orientation_xyzw,
         max_step_m=max_step_m,
         max_step_deg=max_step_deg,
-        min_steps=int(getattr(args, "target_trajectory_min_steps", 1)),
+        min_steps=(
+            int(getattr(args, "target_trajectory_min_steps", 1))
+            if min_steps is None
+            else max(int(min_steps), 1)
+        ),
         on_after_waypoint=on_after_waypoint,
         final_hold_sec=final_hold_sec,
         terminal_slowdown=terminal_slowdown,

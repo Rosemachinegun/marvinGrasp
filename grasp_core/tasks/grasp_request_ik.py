@@ -23,6 +23,7 @@ from grasp_core.communication.gripper_signal import (
 )
 from grasp_core.planning.grasp_pose import make_gripper_target_pose
 from grasp_core.tasks.ribbon_policy import assume_grasp_success
+from grasp_core.tasks.put import smooth_bezier_arc_waypoints
 from grasp_core.core.pose_math import (
     PickTemplateWaypoint,
     PoseWaypoint,
@@ -43,7 +44,6 @@ from grasp_core.communication.request_ik_publisher import (
     RequestIkTargetPublisher,
     save_request_ik_grasp_path_artifacts,
     publish_request_ik_path,
-    publish_request_ik_target,
 )
 from grasp_core.planning.tool_pick_templates import (
     build_pick_template_waypoints,
@@ -174,13 +174,22 @@ def publish_latest_request_ik_target(
                     flush=True,
                 )
             if grip_waypoint_index is None:
+                smooth_pick_waypoints = smooth_bezier_arc_waypoints(
+                    start_position,
+                    start_orientation,
+                    pose_waypoints[-1][0],
+                    pose_waypoints[-1][1],
+                    args,
+                    lift_arc=False,
+                )
                 count = publish_request_ik_path(
                     publisher,
                     hand,
-                    pose_waypoints,
+                    smooth_pick_waypoints,
                     args,
                     start_position_xyz=start_position,
                     start_orientation_xyzw=start_orientation,
+                    min_steps=1,
                     terminal_slowdown=True,
                 )
             else:
@@ -190,20 +199,29 @@ def publish_latest_request_ik_target(
                     f"total_waypoints={len(pose_waypoints)}",
                     flush=True,
                 )
+                grip_position, grip_orientation = pose_waypoints[grip_waypoint_index]
+                smooth_approach_waypoints = smooth_bezier_arc_waypoints(
+                    start_position,
+                    start_orientation,
+                    grip_position,
+                    grip_orientation,
+                    args,
+                    lift_arc=False,
+                )
                 count = publish_request_ik_path(
                     publisher,
                     hand,
-                    pose_waypoints[: grip_waypoint_index + 1],
+                    smooth_approach_waypoints,
                     args,
                     start_position_xyz=start_position,
                     start_orientation_xyzw=start_orientation,
                     final_hold_sec=0.0,
                     terminal_slowdown=True,
+                    min_steps=1,
                 )
                 grasp_path_artifacts = save_request_ik_grasp_path_artifacts(
                     publisher, target, hand, args
                 )
-                grip_position, grip_orientation = pose_waypoints[grip_waypoint_index]
                 count += grip_callbacks[grip_waypoint_index](
                     publisher,
                     hand,
@@ -249,16 +267,24 @@ def publish_latest_request_ik_target(
             fallback_reason = fallback_reason or grasp_fallback_reason
             position = gripper_pose[:3, 3].copy()
             orientation = matrix_to_quaternion(gripper_pose)
-            count = publish_request_ik_target(
-                publisher,
-                hand,
+            smooth_approach_waypoints = smooth_bezier_arc_waypoints(
+                start_position,
+                start_orientation,
                 position,
                 orientation,
+                args,
+                lift_arc=False,
+            )
+            count = publish_request_ik_path(
+                publisher,
+                hand,
+                smooth_approach_waypoints,
                 args,
                 start_position_xyz=start_position,
                 start_orientation_xyzw=start_orientation,
                 final_hold_sec=0.0,
                 terminal_slowdown=True,
+                min_steps=1,
             )
             print(
                 "[computed_grasp] target reached; sending grip command "
