@@ -3,7 +3,7 @@
 > **Perception-driven robotic grasping pipeline for real-world dual-arm manipulation.**  
 > From RGB-D perception and 6D object pose estimation to grasp policy, motion generation, gripper control, and failure recovery.
 
-`MarvinGrasp` 是一套面向真实机器人抓取任务的端到端实验框架。
+`MarvinGrasp` 是一套面向真实机器人抓取任务的实验框架。
 
 项目围绕一个核心问题展开：
 
