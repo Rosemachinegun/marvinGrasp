@@ -42,7 +42,7 @@ DEFAULT_ROBOT_XACRO_PATH = PROJECT_ROOT / "config" / "stand_v3.urf.xacro"
 
 
 DEFAULT_TOOL_TEMPLATE_PATH = PROJECT_ROOT / "config" / "tool.yaml"
-DEFAULT_SAM3_ROI_XYXY = (161, 9, 504, 343)
+DEFAULT_SAM3_ROI_XYXY = (202, 40, 543, 328)
 
 @dataclass(frozen=True)
 class GripSignalDefaults:
@@ -1538,8 +1538,8 @@ def parse_args() -> argparse.Namespace:
         metavar="TRUE/FALSE",
         help=(
             "TRUE starts the same capture -> SAM3 -> FlowPose -> grasp workflow "
-            "as the A key after every successful put (default: TRUE); "
-            "FALSE stops after put."
+            "as the A key after every successful put and after completed grip-"
+            "failure recovery (default: TRUE); FALSE stops automatic continuation."
         ),
     )
     parser.add_argument(

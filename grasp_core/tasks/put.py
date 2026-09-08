@@ -94,7 +94,7 @@ def smooth_bezier_arc_waypoints(
         max_endpoint_z = max(float(start_position[2]), float(end_position[2]))
         lift_m = min(max(0.22 * distance_m, 0.07), 0.16)
         safe_z_m = max(
-            float(getattr(args, "home_safe_z_m", 0.85)),
+            float(getattr(args, "home_safe_z_m", 0.82)),
             max_endpoint_z + 0.04,
         )
         arc_apex_z = max(max_endpoint_z + lift_m, safe_z_m)

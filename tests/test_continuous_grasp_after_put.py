@@ -24,7 +24,7 @@ def test_successful_put_optionally_restarts_a_key_pipeline(continuous):
         status="put complete",
         grasp_hand="right",
     )
-    app.start_pipeline = Mock()
+    app.start_pipeline = Mock(return_value=True)
 
     app.publish_put()
 
@@ -33,6 +33,7 @@ def test_successful_put_optionally_restarts_a_key_pipeline(continuous):
     assert app.state.grasp_confirmed_label is None
     if continuous:
         app.start_pipeline.assert_called_once_with(grasp_on_done=True)
+        assert app.state.continuous_grasp_pending is False
     else:
         app.start_pipeline.assert_not_called()
 
@@ -51,8 +52,32 @@ def test_successful_put_restarts_pipeline_by_default():
         status="put complete",
         grasp_hand="left",
     )
-    app.start_pipeline = Mock()
+    app.start_pipeline = Mock(return_value=True)
 
     app.publish_put()
 
     app.start_pipeline.assert_called_once_with(grasp_on_done=True)
+
+
+def test_successful_put_retries_pipeline_when_first_start_is_blocked():
+    app = GraspDemoApp.__new__(GraspDemoApp)
+    app.args = SimpleNamespace(enable_put_after_grasp=True)
+    app.state = RuntimeState(
+        grasp_confirmed=True,
+        grasp_confirmed_hand="right",
+        grasp_confirmed_label="cube",
+    )
+    app.robot_actions = Mock()
+    app.robot_actions.publish_put.return_value = SimpleNamespace(
+        ok=True,
+        status="put complete",
+        grasp_hand="right",
+    )
+    app.start_pipeline = Mock(side_effect=[False, True])
+
+    app.publish_put()
+
+    assert app.state.continuous_grasp_pending is True
+    app.advance_continuous_grasp()
+    assert app.state.continuous_grasp_pending is False
+    assert app.start_pipeline.call_count == 2

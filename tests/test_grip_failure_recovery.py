@@ -86,6 +86,52 @@ def test_manual_right_grip_failure_returns_home() -> None:
     assert "moving right to recovery" in app.state.status
 
 
+def test_failure_recovery_continues_with_fresh_grasp_pipeline() -> None:
+    app = GraspDemoApp.__new__(GraspDemoApp)
+    app.args = Namespace(
+        ik_hand="auto",
+        continuous_grasp_after_put=True,
+        grip_retry_loop=True,
+        grip_retry_max_attempts=3,
+    )
+    app.state = app_state()
+    app.robot_actions = FakeRobotActions()
+    app.action_executor = ImmediateExecutor()
+    submitted = []
+    app.submit_sam3 = lambda bundle, retry=False: submitted.append((bundle, retry))
+
+    app.start_grip_failure_recovery(
+        "GRIP_FAILED_MIN_LIMIT hand=right: reached min",
+        failed_hand="right",
+    )
+    app.update_recovery()
+    frame = object()
+    app.advance_replan_state(frame)
+
+    assert app.state.retry_stage is RetryStage.SAM3
+    assert submitted == [(frame, True)]
+
+
+def test_shared_continuous_switch_disables_failure_regrasp() -> None:
+    app = GraspDemoApp.__new__(GraspDemoApp)
+    app.args = Namespace(
+        ik_hand="auto",
+        continuous_grasp_after_put=False,
+        grip_retry_loop=True,
+        grip_retry_max_attempts=3,
+    )
+    app.state = app_state()
+    app.robot_actions = FakeRobotActions()
+    app.action_executor = ImmediateExecutor()
+
+    app.start_grip_failure_recovery(
+        "GRIP_FAILED_MIN_LIMIT hand=left: reached min",
+        failed_hand="left",
+    )
+
+    assert app.state.retry_will_regrasp is False
+
+
 def app_state():
     from grasp_core.apps.flowpose_request_ik_app import RuntimeState
 

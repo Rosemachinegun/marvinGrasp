@@ -128,6 +128,7 @@ class RuntimeState:
     drop_recovery_hand: str | None = None
     drop_recovery_cancelled: bool = False
     drop_regrasp_pending: bool = False
+    continuous_grasp_pending: bool = False
 
 
 def is_pending(future: Future | None) -> bool:
@@ -572,10 +573,23 @@ class GraspDemoApp:
 
     def restart_grasp_pipeline_after_put(self) -> None:
         """Optionally repeat the same perception-and-grasp workflow as the A key."""
-        if not bool(getattr(self.args, "continuous_grasp_after_put", False)):
+        if not bool(getattr(self.args, "continuous_grasp_after_put", True)):
+            print("[put] continuous grasp disabled", flush=True)
             return
         print("[put] put complete; restarting A-key grasp pipeline", flush=True)
-        self.start_pipeline(grasp_on_done=True)
+        # Normally this starts immediately.  If a previous future has not been
+        # collected yet or the camera briefly has no frame, keep the request
+        # armed and retry from the live loop instead of silently losing it.
+        self.state.continuous_grasp_pending = True
+        if self.start_pipeline(grasp_on_done=True):
+            self.state.continuous_grasp_pending = False
+
+    def advance_continuous_grasp(self) -> None:
+        """Retry a post-put pipeline start once transient blockers are gone."""
+        if not self.state.continuous_grasp_pending or self.state.paused:
+            return
+        if self.start_pipeline(grasp_on_done=True):
+            self.state.continuous_grasp_pending = False
 
     def start_drop_recovery(self, status: str, hand: str | None) -> None:
         """Apply S-style stop, move to recovery, then schedule the A workflow."""
@@ -686,7 +700,13 @@ class GraspDemoApp:
 
         s.retry_attempts += 1
         max_attempts = max(int(getattr(self.args, "grip_retry_max_attempts", 3)), 0)
-        retry_enabled = bool(getattr(self.args, "grip_retry_loop", True))
+        # The shared continuous-grasp switch controls both successful-put
+        # continuation and failure-recovery continuation.  grip_retry_loop and
+        # its attempt limit remain the failure-specific safety controls.
+        retry_enabled = (
+            bool(getattr(self.args, "continuous_grasp_after_put", True))
+            and bool(getattr(self.args, "grip_retry_loop", True))
+        )
         s.retry_will_regrasp = retry_enabled and (
             max_attempts == 0 or s.retry_attempts <= max_attempts
         )
@@ -816,7 +836,7 @@ class GraspDemoApp:
             )
             self.publish_grasp()
 
-    def start_pipeline(self, *, grasp_on_done: bool = True) -> None:
+    def start_pipeline(self, *, grasp_on_done: bool = True) -> bool:
         """Start one-key capture -> SAM3 -> FlowPose, optionally followed by grasp."""
         s = self.state
         if (
@@ -827,12 +847,12 @@ class GraspDemoApp:
             or bool(s.recovery_futures)
         ):
             s.status = "Pipeline already running"
-            return
+            return False
 
         bundle = self.camera.read_latest()
         if bundle is None:
             s.status = "Pipeline stopped: failed to capture fresh frame"
-            return
+            return False
 
         self.reset_retry(reset_attempts=True)
         s.pipeline_grasp_on_done = grasp_on_done
@@ -841,6 +861,11 @@ class GraspDemoApp:
         if s.sam_future is None:
             s.pipeline_stage = PipelineStage.IDLE
             s.pipeline_grasp_on_done = True
+            return False
+        # A manual A-key start also satisfies any queued post-put restart, so it
+        # must not trigger a duplicate pipeline after this one completes.
+        s.continuous_grasp_pending = False
+        return True
 
     def advance_pipeline(self) -> None:
         """Advance the one-key workflow as soon as each async result is ready."""
@@ -968,6 +993,7 @@ class GraspDemoApp:
                 self.state.home_needs_sync.update({"left", "right"})
                 # Resume must never restart the pre-pause automatic pipeline.
                 self.state.pipeline_stage = PipelineStage.IDLE
+                self.state.continuous_grasp_pending = False
                 self.reset_retry()
                 self.gripper_interrupted = self.gripper_future is not None
                 self.state.grasp_confirmed = False
@@ -1047,7 +1073,8 @@ class GraspDemoApp:
             if not self.state.paused:
                 self.update_recovery()
                 self.advance_drop_regrasp()
-           # self.advance_replan_state(bundle)
+                self.advance_continuous_grasp()
+                self.advance_replan_state(bundle)
             self.render(bundle)
 
             if not self.handle_key(cv2.waitKey(1), bundle):
