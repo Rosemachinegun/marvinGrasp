@@ -568,6 +568,14 @@ class GraspDemoApp:
             self.state.grasp_confirmed = False
             self.state.grasp_confirmed_hand = None
             self.state.grasp_confirmed_label = None
+            self.restart_grasp_pipeline_after_put()
+
+    def restart_grasp_pipeline_after_put(self) -> None:
+        """Optionally repeat the same perception-and-grasp workflow as the A key."""
+        if not bool(getattr(self.args, "continuous_grasp_after_put", False)):
+            return
+        print("[put] put complete; restarting A-key grasp pipeline", flush=True)
+        self.start_pipeline(grasp_on_done=True)
 
     def start_drop_recovery(self, status: str, hand: str | None) -> None:
         """Apply S-style stop, move to recovery, then schedule the A workflow."""

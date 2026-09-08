@@ -88,14 +88,14 @@ def add_gripper_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--min-pos", type=int, default=100)
     parser.add_argument("--max-pos", type=int, default=1000)
-    parser.add_argument("--grip-speed", type=int, default=60)
+    parser.add_argument("--grip-speed", type=int, default=80)
     parser.add_argument("--grip-torque", type=int, default=30)
     parser.add_argument("--hold-torque", type=int, default=10)
     parser.add_argument("--current-threshold", type=int, default=120)
-    parser.add_argument("--poll-interval", type=float, default=0.05)
-    parser.add_argument("--contact-grace", type=float, default=0.4)
+    parser.add_argument("--poll-interval", type=float, default=0.02)
+    parser.add_argument("--contact-grace", type=float, default=0.1)
     parser.add_argument("--progress-epsilon", type=int, default=2)
-    parser.add_argument("--stall-samples", type=int, default=5)
+    parser.add_argument("--stall-samples", type=int, default=3)
     parser.add_argument(
         "--empty-grip-margin",
         type=int,

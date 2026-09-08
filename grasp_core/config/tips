@@ -34,7 +34,7 @@
 | ------------------------- | ------------------------------------------- |
 | `left_current_threshold`  | 左夹爪电流阈值。电流超过一定程度通常意味着碰到物体或电机受阻。             |
 | `right_current_threshold` | 右夹爪电流阈值。                                    |
-| `left_poll_interval`      | 左夹爪状态读取周期，0.05 秒，即约 20 Hz。                  |
+| `left_poll_interval`      | 左夹爪状态读取周期，默认 0.02 秒，即约 50 Hz。                |
 | `right_poll_interval`     | 右夹爪状态读取周期。                                  |
 | `left_contact_grace`      | 发出闭合命令后，先等待一段时间再开始判断接触/堵转，防止启动瞬间误判。         |
 | `right_contact_grace`     | 右夹爪同上。                                      |

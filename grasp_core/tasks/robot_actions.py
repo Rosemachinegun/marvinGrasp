@@ -30,8 +30,8 @@ from grasp_core.core.robot_target_pose import TargetObjectPose
 
 GRIP_MIN_LIMIT_TOKENS = ("GRASP_FAILED_MIN_LIMIT", "GRIP_FAILED_MIN_LIMIT")
 FAILURE_RECOVERY_XYZ = {
-    "left": (0.36, 0.14, 0.74),
-    "right": (0.36, -0.14, 0.74),
+    "left": (0.28, 0.23, 0.79),
+    "right": (0.28, -0.23, 0.79),
 }
 
 

@@ -73,3 +73,21 @@ def test_dual_receiver_args_keep_left_and_right_grasp_limits_separate() -> None:
     assert left.gripper_empty_grip_margin == 150
     assert right.gripper_empty_grip_margin == 0
     assert left.gripper_min_pos == right.gripper_min_pos == 100
+
+
+def test_default_grip_confirmation_is_low_latency() -> None:
+    """The close-to-lift gate should add well below 0.2 s after motion stalls."""
+
+    assert GRIPPER_DEFAULTS.left_grip_speed == 80
+    assert GRIPPER_DEFAULTS.right_grip_speed == 80
+    assert GRIPPER_DEFAULTS.left_poll_interval == 0.02
+    assert GRIPPER_DEFAULTS.right_poll_interval == 0.02
+    assert GRIPPER_DEFAULTS.left_contact_grace == 0.1
+    assert GRIPPER_DEFAULTS.right_contact_grace == 0.1
+    assert GRIPPER_DEFAULTS.left_stall_samples == 3
+    assert GRIPPER_DEFAULTS.right_stall_samples == 3
+    assert (
+        GRIPPER_DEFAULTS.right_contact_grace
+        + GRIPPER_DEFAULTS.right_poll_interval * GRIPPER_DEFAULTS.right_stall_samples
+        < 0.2
+    )

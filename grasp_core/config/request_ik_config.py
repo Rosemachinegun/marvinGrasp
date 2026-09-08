@@ -81,22 +81,25 @@ class GripperDefaults:
     right_min_pos: int = 100
     left_max_pos: int = 1000
     right_max_pos: int = 1000
-    left_grip_speed: int = 60
-    right_grip_speed: int = 60
+    # Close briskly, then switch to the lower hold torque as soon as contact is
+    # confirmed.  This shortens the only blocking section between the lowest
+    # pick waypoint and the lift motion without lifting on an unconfirmed grip.
+    left_grip_speed: int = 80
+    right_grip_speed: int = 80
     left_grip_torque: int = 40
     right_grip_torque: int = 40
     left_hold_torque: int = 20
     right_hold_torque: int = 20
     left_current_threshold: int = 120
     right_current_threshold: int = 120
-    left_poll_interval: float = 0.05
-    right_poll_interval: float = 0.05
-    left_contact_grace: float = 0.4
-    right_contact_grace: float = 0.4
+    left_poll_interval: float = 0.02
+    right_poll_interval: float = 0.02
+    left_contact_grace: float = 0.1
+    right_contact_grace: float = 0.1
     left_progress_epsilon: int = 2
     right_progress_epsilon: int = 2
-    left_stall_samples: int = 5
-    right_stall_samples: int = 5
+    left_stall_samples: int = 3
+    right_stall_samples: int = 3
     left_empty_grip_margin: int = 50
     right_empty_grip_margin: int = 50
     left_target_pos_tolerance: int = 120
@@ -1526,6 +1529,17 @@ def parse_args() -> argparse.Namespace:
         help=(
             "TRUE automatically runs the fixed put action after a "
             "gripper-confirmed successful grasp; FALSE disables auto put."
+        ),
+    )
+    parser.add_argument(
+        "--continuous-grasp-after-put",
+        type=parse_bool,
+        default=True,
+        metavar="TRUE/FALSE",
+        help=(
+            "TRUE starts the same capture -> SAM3 -> FlowPose -> grasp workflow "
+            "as the A key after every successful put (default: TRUE); "
+            "FALSE stops after put."
         ),
     )
     parser.add_argument(
