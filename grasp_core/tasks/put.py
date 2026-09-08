@@ -26,8 +26,8 @@ from grasp_core.core.pose_math import (
 from grasp_core.core.robot_target_pose import matrix_to_quaternion
 from grasp_core.motion.trajectory import effective_trajectory_step_limits
 
-FIXED_PUT_RIGHT_XYZ = (0.45, -0.34, 0.826)
-FIXED_PUT_LEFT_XYZ = (0.45, 0.34, 0.826)
+FIXED_PUT_RIGHT_XYZ = (0.45, -0.34, 0.82)
+FIXED_PUT_LEFT_XYZ = (0.45, 0.34, 0.82)
 # FIXED_PUT_RIGHT_XYZ = (0.54, -0.30, 0.776)
 FIXED_PUT_OBJECT_RIGHT_XYZ = {
     "yellow_cube": (0.40, -0.40, 0.86),
@@ -94,7 +94,7 @@ def smooth_bezier_arc_waypoints(
         max_endpoint_z = max(float(start_position[2]), float(end_position[2]))
         lift_m = min(max(0.22 * distance_m, 0.07), 0.16)
         safe_z_m = max(
-            float(getattr(args, "home_safe_z_m", 0.82)),
+            float(getattr(args, "home_safe_z_m", 0.8)),
             max_endpoint_z + 0.04,
         )
         arc_apex_z = max(max_endpoint_z + lift_m, safe_z_m)

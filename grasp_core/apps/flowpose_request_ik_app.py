@@ -129,6 +129,10 @@ class RuntimeState:
     drop_recovery_cancelled: bool = False
     drop_regrasp_pending: bool = False
     continuous_grasp_pending: bool = False
+    # A successful put intentionally leaves this hand at the put pose.  If the
+    # next perception result selects the other hand, this one can return HOME
+    # while the newly selected hand starts its grasp.
+    parked_after_put_hand: str | None = None
 
 
 def is_pending(future: Future | None) -> bool:
@@ -156,6 +160,8 @@ class GraspDemoApp:
         self.grasp_future: Future | None = None
         self.manual_home_future: Future | None = None
         self.manual_home_hand: str | None = None
+        self.auto_home_future: Future | None = None
+        self.auto_home_hand: str | None = None
         self.gripper_interrupted = False
 
         sam_kwargs, flowpose_kwargs, capture_dir = build_runner_kwargs(args)
@@ -484,11 +490,70 @@ class GraspDemoApp:
             self.ik_publisher.clear_stop()
 
         targets = list(self.state.base_targets)
+        selected_hand = self.selected_grasp_hand(targets)
+        self.start_parked_hand_home_if_switching(selected_hand)
         self.grasp_future = self.action_executor.submit(
             self.robot_actions.publish_grasp,
             targets,
         )
-        self.state.status = "Grasp action running"
+        if self.auto_home_future is not None:
+            self.state.status = (
+                f"Grasp action running hand={selected_hand}; "
+                f"{self.auto_home_hand} returning HOME in parallel"
+            )
+        else:
+            self.state.status = "Grasp action running"
+
+    def selected_grasp_hand(
+        self, targets: list[TargetObjectPose],
+    ) -> str | None:
+        """Resolve the same target/hand that RobotActionService will use."""
+        if not targets:
+            return None
+        index = min(max(int(self.args.ik_target_index), 0), len(targets) - 1)
+        return select_ik_hand(targets[index].base_xyz, str(self.args.ik_hand))
+
+    def start_parked_hand_home_if_switching(
+        self, selected_hand: str | None,
+    ) -> None:
+        """On a hand switch, send the previous put hand HOME concurrently."""
+        parked_hand = self.state.parked_after_put_hand
+        if (
+            selected_hand not in {"left", "right"}
+            or parked_hand not in {"left", "right"}
+            or parked_hand == selected_hand
+            or is_pending(getattr(self, "auto_home_future", None))
+        ):
+            return
+
+        self.auto_home_hand = parked_hand
+        self.auto_home_future = self.action_executor.submit(
+            self.robot_actions.publish_home,
+            parked_hand,
+            fresh_measured_start=parked_hand in self.state.home_needs_sync,
+        )
+        self.state.parked_after_put_hand = None
+        print(
+            f"[home] hand switch to {selected_hand}; "
+            f"returning previous {parked_hand} hand HOME in parallel",
+            flush=True,
+        )
+
+    def collect_auto_home_result(self) -> None:
+        """Collect a hand-switch HOME without overwriting the grasp status."""
+        future = getattr(self, "auto_home_future", None)
+        if future is None or not future.done():
+            return
+        hand = self.auto_home_hand
+        try:
+            status = future.result()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[home] automatic {hand} HOME failed: {exc}", flush=True)
+        else:
+            self.state.home_needs_sync.discard(hand)
+            print(f"[home] automatic {hand} HOME complete: {status}", flush=True)
+        self.auto_home_future = None
+        self.auto_home_hand = None
 
     def collect_grasp_result(self) -> None:
         if self.grasp_future is None or not self.grasp_future.done():
@@ -566,6 +631,7 @@ class GraspDemoApp:
         if "GRASP_DROPPED" in result.status:
             self.start_drop_recovery(result.status, result.grasp_hand)
         elif result.ok:
+            self.state.parked_after_put_hand = result.grasp_hand
             self.state.grasp_confirmed = False
             self.state.grasp_confirmed_hand = None
             self.state.grasp_confirmed_label = None
@@ -938,6 +1004,7 @@ class GraspDemoApp:
         if (self.grasp_future is not None or self.gripper_future is not None
                 or self.manual_home_future is not None or self.state.recovery_futures
                 or self.state.drop_recovery_futures
+                or is_pending(getattr(self, "auto_home_future", None))
                 or self.state.pipeline_stage is not PipelineStage.IDLE):
             self.state.status = "HOME deferred: another robot action is still running"
             return
@@ -961,6 +1028,8 @@ class GraspDemoApp:
                     and not self.ik_publisher.stop_requested()):
                 self.state.status = status
                 self.state.home_needs_sync.discard(self.manual_home_hand)
+                if self.state.parked_after_put_hand == self.manual_home_hand:
+                    self.state.parked_after_put_hand = None
         self.manual_home_future = None
         self.manual_home_hand = None
 
@@ -1068,6 +1137,7 @@ class GraspDemoApp:
                 self.advance_pipeline()
             self.collect_grasp_result()
             self.collect_manual_home_result()
+            self.collect_auto_home_result()
             self._collect_gripper_result()
             self.update_drop_recovery()
             if not self.state.paused:

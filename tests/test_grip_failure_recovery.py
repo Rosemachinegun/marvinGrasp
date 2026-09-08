@@ -9,6 +9,21 @@ from grasp_core.tasks.grasp_request_ik import GripFailedMinLimit, execute_grip_a
 from grasp_core.core.robot_target_pose import TargetObjectPose
 
 
+def test_grasp_path_artifacts_are_not_saved_before_template_grip() -> None:
+    """Diagnostics must stay out of the target-arrival -> close critical path."""
+    import inspect
+    from grasp_core.tasks import grasp_request_ik
+
+    source = inspect.getsource(grasp_request_ik.publish_latest_request_ik_target)
+    callback_index = source.index("count += grip_callbacks[grip_waypoint_index]")
+    final_artifact_index = source.index(
+        "grasp_path_artifacts or save_request_ik_grasp_path_artifacts"
+    )
+
+    assert "save_request_ik_grasp_path_artifacts" not in source[:callback_index]
+    assert callback_index < final_artifact_index
+
+
 class ImmediateExecutor:
     def __init__(self) -> None:
         self.calls = []

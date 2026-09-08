@@ -1,5 +1,7 @@
 from argparse import Namespace
 
+import pytest
+
 from daimon_stuff import grip_signal_receiver
 
 
@@ -125,3 +127,29 @@ def test_release_warns_when_known_calibration_position_is_far(monkeypatch, capsy
     output = capsys.readouterr().out
     assert "WARNING 夹爪位置标定可能偏差较大" in output
     assert "不执行找零动作" in output
+
+
+def test_cached_gripper_starts_grip_without_reinitializing_or_closing(monkeypatch) -> None:
+    grip = FakeGrip(positions=[600, 500, 400], currents=[0, 200])
+    args = grip_args(
+        grip_speed=80,
+        grip_torque=40,
+        hold_torque=20,
+        grip_done_wait=0.0,
+    )
+    monkeypatch.setattr(
+        grip_signal_receiver,
+        "init_known_gripper",
+        lambda *_args, **_kwargs: pytest.fail("cached grip must not reinitialize"),
+    )
+    monkeypatch.setattr(
+        grip_signal_receiver,
+        "finish_grasp",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = grip_signal_receiver.run_grip(args, grip=grip)
+
+    assert result == 0
+    assert grip.commands[0] == ("move_to_pos", args.min_pos)
+    assert grip.closed is False

@@ -397,6 +397,10 @@ def init_known_gripper(args: argparse.Namespace, *, command: str) -> LingkongGri
 
 
 def wait_for_fresh_status(grip: LingkongGrip, timeout: float = 2.0) -> bool:
+    # A pre-warmed receiver already has a valid asynchronous status sample; do
+    # not add a fixed sleep on the critical target-arrival -> close path.
+    if grip.read_pos() != -1:
+        return True
     start = time.monotonic()
     last_current = grip.read_cur_current()
     while time.monotonic() - start < timeout:
@@ -414,8 +418,9 @@ def measured_pos_far_from_target(pos: int, target: int, args: argparse.Namespace
     return abs(int(pos) - int(target)) > int(args.target_pos_tolerance)
 
 
-def run_grip(args: argparse.Namespace) -> int:
-    grip = init_known_gripper(args, command="grip")
+def run_grip(args: argparse.Namespace, grip: LingkongGrip | None = None) -> int:
+    owns_grip = grip is None
+    grip = grip or init_known_gripper(args, command="grip")
     if grip is None:
         return 1
 
@@ -443,8 +448,9 @@ def run_grip(args: argparse.Namespace) -> int:
         time.sleep(args.grip_done_wait)
         return 0
     finally:
-        grip.close(reset_torque=not keep_hold_torque)
-        print("夹爪连接已关闭", flush=True)
+        if owns_grip:
+            grip.close(reset_torque=not keep_hold_torque)
+            print("夹爪连接已关闭", flush=True)
 
 
 def run_continuous_grasp(
@@ -539,8 +545,9 @@ def finish_grasp(
     return contact_pos
 
 
-def run_release(args: argparse.Namespace) -> int:
-    grip = init_known_gripper(args, command="release")
+def run_release(args: argparse.Namespace, grip: LingkongGrip | None = None) -> int:
+    owns_grip = grip is None
+    grip = grip or init_known_gripper(args, command="release")
     if grip is None:
         return 1
 
@@ -572,8 +579,9 @@ def run_release(args: argparse.Namespace) -> int:
         keep_torque = True
         return 0
     finally:
-        grip.close(reset_torque=not keep_torque)
-        print("夹爪连接已关闭", flush=True)
+        if owns_grip:
+            grip.close(reset_torque=not keep_torque)
+            print("夹爪连接已关闭", flush=True)
 
 
 def run_check(args: argparse.Namespace) -> int:
@@ -649,11 +657,11 @@ def run_command(state: GripState, command: str) -> tuple[bool, str]:
     print(f"[{started}] receive {command} signal", flush=True)
     try:
         if command == "grip":
-            state.close_feedback_grip()
-            code = run_grip(state.args)
+            grip, _source = state.get_feedback_grip()
+            code = 1 if grip is None else run_grip(state.args, grip=grip)
         elif command == "release":
-            state.close_feedback_grip()
-            code = run_release(state.args)
+            grip, _source = state.get_feedback_grip()
+            code = 1 if grip is None else run_release(state.args, grip=grip)
         elif command == "check":
             state.close_feedback_grip()
             code = run_check(state.args)
@@ -699,8 +707,9 @@ def run_command(state: GripState, command: str) -> tuple[bool, str]:
             state.last_result = message
         return ok, f"{'OK' if ok else 'ERR'} {message}"
     except Exception as exc:
-        if command == "feedback":
-            state.close_feedback_grip()
+        # Discard a potentially unhealthy cached session.  The next command
+        # will reconnect instead of repeatedly using a broken channel.
+        state.close_feedback_grip()
         message = f"ERROR {exc}"
         print(message, flush=True)
         with state.lock:
@@ -751,6 +760,13 @@ class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
 
 def serve(args: argparse.Namespace) -> int:
     state = GripState(args)
+    # Establish and validate the hardware connection before any robot motion so
+    # a later grip command can start closing immediately at the target pose.
+    grip, source = state.get_feedback_grip()
+    if grip is None:
+        print("[gripper] startup prewarm failed; commands will retry", flush=True)
+    else:
+        print(f"[gripper] startup prewarm ready source={source}", flush=True)
     with ThreadedTCPServer((args.host, args.port), GripRequestHandler) as server:
         server.state = state
         print(f"grip signal receiver listening on {args.host}:{args.port}", flush=True)
@@ -762,7 +778,10 @@ def serve(args: argparse.Namespace) -> int:
         )
         if args.token:
             print("token enabled: send '<token> grip' or '<token> release'", flush=True)
-        server.serve_forever()
+        try:
+            server.serve_forever()
+        finally:
+            state.close_feedback_grip()
     return 0
 
 

@@ -219,9 +219,10 @@ def publish_latest_request_ik_target(
                     terminal_slowdown=True,
                     min_steps=1,
                 )
-                grasp_path_artifacts = save_request_ik_grasp_path_artifacts(
-                    publisher, target, hand, args
-                )
+                # Do not render/save trajectory diagnostics on the critical
+                # target-arrival -> gripper-close path.  Matplotlib startup and
+                # disk I/O can otherwise leave the arm visibly waiting at the
+                # object.  Artifacts are saved below after grip/lift completes.
                 count += grip_callbacks[grip_waypoint_index](
                     publisher,
                     hand,
