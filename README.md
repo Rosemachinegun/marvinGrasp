@@ -1,4 +1,3 @@
-![System Architecture](frame.png)
 # MarvinGrasp
 
 > **Perception-driven robotic grasping pipeline for real-world dual-arm manipulation.**  
@@ -56,7 +55,7 @@ Daimon Gripper
      ├── Drop detection
      └── Failure recovery
 ```
-
+![System Architecture](frame.png)
 整个系统不是简单地将视觉模型输出直接发送给 IK。
 
 在 **Perception → Robot Execution** 之间增加了一层抓取策略与姿态规范化，使视觉模型给出的“几何上正确姿态”进一步转换成“机械臂真正适合执行的姿态”。
