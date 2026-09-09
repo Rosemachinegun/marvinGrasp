@@ -216,6 +216,10 @@ class HomeDefaults:
     left_xyz: tuple[float, float, float] = (0.25, 0.25, 0.81)
     safe_z_m: float = 0.95
     side_clearance_y_m: float = 0.28
+    tilt_z_left_deg: float = 0.0
+    tilt_z_right_deg: float = 0.0
+    tilt_y_left_deg: float = 0.0
+    tilt_y_right_deg: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -223,6 +227,10 @@ class PutDefaults:
     target_hold_sec: float = 0.0
     home_hold_sec: float = 0.05
     keep_put_pose: bool = True
+    tilt_z_left_deg: float = 0.0
+    tilt_z_right_deg: float = 0.0
+    tilt_y_left_deg: float = 0.0
+    tilt_y_right_deg: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -649,6 +657,30 @@ def normalize_gripper_args(args: argparse.Namespace) -> argparse.Namespace:
     args.grip_drop_poll_interval = max(float(args.grip_drop_poll_interval), 0.02)
     args.put_target_hold_sec = max(float(args.put_target_hold_sec), 0.0)
     args.put_home_hold_sec = max(float(args.put_home_hold_sec), 0.0)
+    args.home_tilt_z_left_deg = float(getattr(
+        args, "home_tilt_z_left_deg", HOME_DEFAULTS.tilt_z_left_deg,
+    ))
+    args.home_tilt_z_right_deg = float(getattr(
+        args, "home_tilt_z_right_deg", HOME_DEFAULTS.tilt_z_right_deg,
+    ))
+    args.home_tilt_y_left_deg = float(getattr(
+        args, "home_tilt_y_left_deg", HOME_DEFAULTS.tilt_y_left_deg,
+    ))
+    args.home_tilt_y_right_deg = float(getattr(
+        args, "home_tilt_y_right_deg", HOME_DEFAULTS.tilt_y_right_deg,
+    ))
+    args.put_tilt_z_left_deg = float(getattr(
+        args, "put_tilt_z_left_deg", PUT_DEFAULTS.tilt_z_left_deg,
+    ))
+    args.put_tilt_z_right_deg = float(getattr(
+        args, "put_tilt_z_right_deg", PUT_DEFAULTS.tilt_z_right_deg,
+    ))
+    args.put_tilt_y_left_deg = float(getattr(
+        args, "put_tilt_y_left_deg", PUT_DEFAULTS.tilt_y_left_deg,
+    ))
+    args.put_tilt_y_right_deg = float(getattr(
+        args, "put_tilt_y_right_deg", PUT_DEFAULTS.tilt_y_right_deg,
+    ))
     args.gripper_calibration_tolerance = max(
         int(args.gripper_calibration_tolerance),
         0,
@@ -803,7 +835,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--auto-pipeline-on-a",
         type=parse_bool,
-        default=False,
+        default=True,
         metavar="TRUE/FALSE",
         help=(
             "TRUE makes A run capture -> SAM3 -> FlowPose -> grasp automatically; "
@@ -1569,10 +1601,58 @@ def parse_args() -> argparse.Namespace:
         help="Seconds to hold the put target before opening the gripper.",
     )
     parser.add_argument(
+        "--home-tilt-z-left-deg",
+        type=float,
+        default=HOME_DEFAULTS.tilt_z_left_deg,
+        help="Left wrist local-Z angle at Home (default: 0 degrees).",
+    )
+    parser.add_argument(
+        "--home-tilt-z-right-deg",
+        type=float,
+        default=HOME_DEFAULTS.tilt_z_right_deg,
+        help="Right wrist local-Z angle at Home (default: 0 degrees).",
+    )
+    parser.add_argument(
+        "--home-tilt-y-left-deg",
+        type=float,
+        default=HOME_DEFAULTS.tilt_y_left_deg,
+        help="Left wrist local-Y angle at Home (default: 0 degrees).",
+    )
+    parser.add_argument(
+        "--home-tilt-y-right-deg",
+        type=float,
+        default=HOME_DEFAULTS.tilt_y_right_deg,
+        help="Right wrist local-Y angle at Home (default: 0 degrees).",
+    )
+    parser.add_argument(
         "--put-home-hold-sec",
         type=float,
         default=PUT_DEFAULTS.home_hold_sec,
         help="Seconds to hold the home target after put release.",
+    )
+    parser.add_argument(
+        "--put-tilt-z-left-deg",
+        type=float,
+        default=PUT_DEFAULTS.tilt_z_left_deg,
+        help="Left wrist local-Z angle at put (default: 0 degrees).",
+    )
+    parser.add_argument(
+        "--put-tilt-z-right-deg",
+        type=float,
+        default=PUT_DEFAULTS.tilt_z_right_deg,
+        help="Right wrist local-Z angle at put (default: 0 degrees).",
+    )
+    parser.add_argument(
+        "--put-tilt-y-left-deg",
+        type=float,
+        default=PUT_DEFAULTS.tilt_y_left_deg,
+        help="Left wrist local-Y angle at put (default: 0 degrees).",
+    )
+    parser.add_argument(
+        "--put-tilt-y-right-deg",
+        type=float,
+        default=PUT_DEFAULTS.tilt_y_right_deg,
+        help="Right wrist local-Y angle at put (default: 0 degrees).",
     )
     parser.add_argument(
         "--put-keep-pose",

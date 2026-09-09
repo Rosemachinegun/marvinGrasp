@@ -18,7 +18,7 @@ from grasp_core.tasks.grasp_drop_detection import GraspDropMonitor, read_grasp_b
 from grasp_core.communication.gripper_signal import send_gripper_signal
 from grasp_core.core.pose_math import (
     PickTemplateWaypoint,
-    ik_wrist_orientation_quat,
+    ik_home_wrist_orientation_quat,
     quaternion_angle_rad,
 )
 from grasp_core.communication.request_ik_publisher import (
@@ -30,8 +30,8 @@ from grasp_core.core.robot_target_pose import TargetObjectPose
 
 GRIP_MIN_LIMIT_TOKENS = ("GRASP_FAILED_MIN_LIMIT", "GRIP_FAILED_MIN_LIMIT")
 FAILURE_RECOVERY_XYZ = {
-    "left": (0.28, 0.23, 0.79),
-    "right": (0.28, -0.23, 0.79),
+    "left": (0.30, 0.19, 0.82),
+    "right": (0.30, -0.19, 0.82),
 }
 
 
@@ -153,7 +153,7 @@ class RobotActionService:
             self.args.left_home_xyz if hand == "left" else self.args.right_home_xyz
         )
         home_position = np.asarray(home_xyz, dtype=np.float64)
-        home_orientation = ik_wrist_orientation_quat(self.args, hand=hand)
+        home_orientation = ik_home_wrist_orientation_quat(self.args, hand=hand)
         start = None
         if resume_stop_generation is not None:
             fresh_measured_start = True

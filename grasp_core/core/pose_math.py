@@ -39,6 +39,27 @@ def ik_wrist_orientation_quat(
     return normalize_quaternion(matrix_to_quaternion(pose))
 
 
+def ik_home_wrist_orientation_quat(
+    args: argparse.Namespace,
+    hand: str | None = None,
+) -> tuple[float, float, float, float]:
+    """Build an independent Home wrist pose; Z/Y default to the neutral 0°."""
+    hand_name = "left" if str(hand).strip().lower() == "left" else "right"
+    home_z_deg = float(getattr(args, f"home_tilt_z_{hand_name}_deg", 0.0))
+    home_y_deg = float(getattr(args, f"home_tilt_y_{hand_name}_deg", 0.0))
+    pose = np.eye(4, dtype=np.float64)
+    pose[:3, :3] = ik_orientation_rotation(args)
+    home_rotation = rotation_matrix_from_zyx_euler_deg(
+        pitch_deg=home_y_deg,
+        yaw_deg=home_z_deg,
+    )
+    if getattr(args, "ik_downward_tilt_frame", "local") == "base":
+        pose[:3, :3] = home_rotation @ pose[:3, :3]
+    else:
+        pose[:3, :3] = pose[:3, :3] @ home_rotation
+    return normalize_quaternion(matrix_to_quaternion(pose))
+
+
 def home_position_for_hand(hand: str, args: argparse.Namespace) -> np.ndarray:
     values = args.left_home_xyz if hand == "left" else args.right_home_xyz
     return checked_position(np.asarray(values, dtype=np.float64))

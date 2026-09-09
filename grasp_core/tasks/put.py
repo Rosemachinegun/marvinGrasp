@@ -17,17 +17,17 @@ from grasp_core.communication.request_ik_publisher import (
 from grasp_core.core.pose_math import (
     PoseWaypoint,
     checked_position,
+    ik_orientation_rotation,
     ik_wrist_orientation_quat,
     normalize_object_type,
-    quaternion_to_rotation_matrix,
     rotation_matrix_from_zyx_euler_deg,
     slerp_quaternion,
 )
 from grasp_core.core.robot_target_pose import matrix_to_quaternion
 from grasp_core.motion.trajectory import effective_trajectory_step_limits
 
-FIXED_PUT_RIGHT_XYZ = (0.45, -0.34, 0.82)
-FIXED_PUT_LEFT_XYZ = (0.45, 0.34, 0.82)
+FIXED_PUT_RIGHT_XYZ = (0.45, -0.40, 0.82)
+FIXED_PUT_LEFT_XYZ = (0.45, 0.40, 0.82)
 # FIXED_PUT_RIGHT_XYZ = (0.54, -0.30, 0.776)
 FIXED_PUT_OBJECT_RIGHT_XYZ = {
     "yellow_cube": (0.40, -0.40, 0.86),
@@ -58,18 +58,19 @@ def humanlike_put_waypoints(
     """
 
     end_position = checked_position(target_position)
+    place_orientation = put_orientation_for_hand(args, hand)
     remembered = publisher.remembered_target(hand)
     if remembered is None:
-        return [(end_position.copy(), target_orientation)]
+        return [(end_position.copy(), place_orientation)]
 
     start_position, start_orientation = remembered
-    place_orientation = put_outward_z_axis_orientation(hand, target_orientation)
     return smooth_bezier_arc_waypoints(
         start_position,
         start_orientation,
         end_position,
         place_orientation,
         args,
+        ease_orientation=True,
     )
 
 
@@ -81,6 +82,7 @@ def smooth_bezier_arc_waypoints(
     args: argparse.Namespace,
     *,
     lift_arc: bool = True,
+    ease_orientation: bool = False,
 ) -> list[PoseWaypoint]:
     """Return constant-distance samples of one smooth cubic Bezier path."""
 
@@ -148,10 +150,13 @@ def smooth_bezier_arc_waypoints(
             end_position,
             alpha,
         )
+        # Put motion uses a quintic smoothstep so wrist angular velocity grows
+        # and falls gradually while the Cartesian Bezier path stays unchanged.
+        orientation_alpha = smootherstep(alpha) if ease_orientation else alpha
         curve_orientation = slerp_quaternion(
             start_orientation,
             end_orientation,
-            alpha,
+            orientation_alpha,
         )
         waypoints.append((curve_position, curve_orientation))
     return waypoints
@@ -176,15 +181,31 @@ def cubic_bezier_position(
     )
 
 
-def put_outward_z_axis_orientation(
+def put_orientation_for_hand(
+    args: argparse.Namespace,
     hand: str,
-    base_orientation: tuple[float, float, float, float],
 ) -> tuple[float, float, float, float]:
-    hand_sign = 1.0 if hand == "left" else -1.0
-    local_z_yaw = rotation_matrix_from_zyx_euler_deg(yaw_deg=hand_sign * 20.0)
+    """Build the independently configured absolute put wrist orientation."""
+    hand_name = normalize_hand(hand)
+    tilt_z_deg = float(getattr(args, f"put_tilt_z_{hand_name}_deg", 0.0))
+    tilt_y_deg = float(getattr(args, f"put_tilt_y_{hand_name}_deg", 0.0))
+    put_rotation = rotation_matrix_from_zyx_euler_deg(
+        pitch_deg=tilt_y_deg,
+        yaw_deg=tilt_z_deg,
+    )
     pose = np.eye(4, dtype=np.float64)
-    pose[:3, :3] = quaternion_to_rotation_matrix(base_orientation) @ local_z_yaw
+    base_rotation = ik_orientation_rotation(args)
+    if getattr(args, "ik_downward_tilt_frame", "local") == "base":
+        pose[:3, :3] = put_rotation @ base_rotation
+    else:
+        pose[:3, :3] = base_rotation @ put_rotation
     return matrix_to_quaternion(pose)
+
+
+def smootherstep(alpha: float) -> float:
+    """Quintic easing with zero first derivative at both endpoints."""
+    t = float(np.clip(alpha, 0.0, 1.0))
+    return t * t * t * (t * (6.0 * t - 15.0) + 10.0)
 
 
 def fixed_put_xyz_for_hand(

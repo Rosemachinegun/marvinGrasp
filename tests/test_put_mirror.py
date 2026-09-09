@@ -4,15 +4,18 @@ import numpy as np
 
 from grasp_core.core.pose_math import (
     ik_wrist_orientation_quat,
+    quaternion_angle_rad,
     quaternion_to_rotation_matrix,
+    rotation_matrix_from_zyx_euler_deg,
 )
+from grasp_core.core.robot_target_pose import matrix_to_quaternion
 from grasp_core.tasks.put import (
     cubic_bezier_position,
     execute_fixed_put_after_grasp,
     fixed_put_xyz_for_hand,
     humanlike_put_waypoints,
     position_for_home,
-    put_outward_z_axis_orientation,
+    put_orientation_for_hand,
     smooth_bezier_arc_waypoints,
 )
 
@@ -42,7 +45,7 @@ def test_object_put_targets_are_mirrored() -> None:
 
 
 def test_put_waypoints_are_mirrored_from_mirrored_starts() -> None:
-    args = Namespace(home_safe_z_m=0.95)
+    args = put_args()
     orientation = (0.0, 0.0, 0.0, 1.0)
     left_publisher = FakePublisher(
         (np.array([0.20, 0.10, 0.82]), orientation),
@@ -75,7 +78,7 @@ def test_put_waypoints_are_mirrored_from_mirrored_starts() -> None:
 
 
 def test_put_waypoints_form_one_smooth_bezier_arc() -> None:
-    args = Namespace(home_safe_z_m=0.95)
+    args = put_args()
     orientation = (0.0, 0.0, 0.0, 1.0)
     start = np.array([0.20, -0.10, 0.82])
     end = np.array(fixed_put_xyz_for_hand("right"))
@@ -144,31 +147,76 @@ def test_home_targets_are_mirrored() -> None:
     )
 
 
-def test_put_orientation_is_mirrored_between_hands() -> None:
-    args = Namespace(
-        ik_orientation_quat=(0.0, 0.0, 0.0, 1.0),
-        ik_downward_tilt_deg=0.0,
-        ik_downward_tilt_left_deg=-45.0,
-        ik_downward_tilt_right_deg=45.0,
-        ik_downward_tilt_axis="z",
-        ik_downward_tilt_y_deg=0.0,
-        ik_downward_tilt_y_left_deg=45.0,
-        ik_downward_tilt_y_right_deg=45.0,
-        ik_downward_tilt_frame="local",
-    )
-    right_orientation = put_outward_z_axis_orientation(
-        "right",
-        ik_wrist_orientation_quat(args, hand="right"),
-    )
-    left_orientation = put_outward_z_axis_orientation(
-        "left",
-        ik_wrist_orientation_quat(args, hand="left"),
-    )
-    right_rotation = quaternion_to_rotation_matrix(right_orientation)
-    left_rotation = quaternion_to_rotation_matrix(left_orientation)
-    mirror_y = np.diag([1.0, -1.0, 1.0])
+def test_put_orientation_restores_both_z_and_y_tilts_to_neutral() -> None:
+    args = put_args()
+    args.ik_downward_tilt_left_deg = -45.0
+    args.ik_downward_tilt_right_deg = 45.0
+    args.ik_downward_tilt_axis = "z"
 
-    np.testing.assert_allclose(left_rotation, mirror_y @ right_rotation @ mirror_y)
+    for hand in ("left", "right"):
+        put_orientation = put_orientation_for_hand(args, hand)
+        np.testing.assert_allclose(
+            quaternion_to_rotation_matrix(put_orientation), np.eye(3), atol=1e-12,
+        )
+
+
+def test_put_orientation_angles_are_independently_configurable() -> None:
+    args = put_args()
+    args.put_tilt_z_left_deg = 12.0
+    args.put_tilt_y_left_deg = -7.0
+
+    actual = quaternion_to_rotation_matrix(put_orientation_for_hand(args, "left"))
+    expected = rotation_matrix_from_zyx_euler_deg(
+        yaw_deg=12.0, pitch_deg=-7.0,
+    )
+    np.testing.assert_allclose(actual, expected, atol=1e-12)
+
+
+def test_put_orientation_eases_in_without_changing_bezier_positions() -> None:
+    args = Namespace(home_safe_z_m=0.95)
+    start = np.array([0.20, -0.10, 0.82])
+    end = np.array(fixed_put_xyz_for_hand("right"))
+    start_orientation = (0.0, 0.0, 0.0, 1.0)
+    end_orientation = rotation_matrix_from_zyx_euler_deg(yaw_deg=-20.0)
+    end_pose = np.eye(4)
+    end_pose[:3, :3] = end_orientation
+    end_orientation_quat = matrix_to_quaternion(end_pose)
+
+    linear = smooth_bezier_arc_waypoints(
+        start, start_orientation, end, end_orientation_quat, args,
+    )
+    eased = smooth_bezier_arc_waypoints(
+        start, start_orientation, end, end_orientation_quat, args,
+        ease_orientation=True,
+    )
+
+    np.testing.assert_allclose(
+        [position for position, _ in eased],
+        [position for position, _ in linear],
+    )
+    first_linear_angle = quaternion_angle_rad(start_orientation, linear[0][1])
+    first_eased_angle = quaternion_angle_rad(start_orientation, eased[0][1])
+    assert first_eased_angle < first_linear_angle
+    np.testing.assert_allclose(eased[-1][1], end_orientation_quat)
+
+
+def test_next_grasp_returns_exactly_to_grasp_orientation() -> None:
+    args = put_args()
+    args.ik_downward_tilt_right_deg = 45.0
+    args.ik_downward_tilt_axis = "z"
+    grasp_orientation = ik_wrist_orientation_quat(args, hand="right")
+    put_orientation = put_orientation_for_hand(args, "right")
+
+    waypoints = smooth_bezier_arc_waypoints(
+        np.array(fixed_put_xyz_for_hand("right")),
+        put_orientation,
+        np.array([0.38, -0.18, 0.70]),
+        grasp_orientation,
+        args,
+        lift_arc=False,
+    )
+
+    np.testing.assert_allclose(waypoints[-1][1], grasp_orientation)
 
 
 def test_keep_put_pose_true_skips_home(monkeypatch) -> None:
@@ -230,6 +278,10 @@ def put_args() -> Namespace:
         home_safe_z_m=0.95,
         put_target_hold_sec=0.0,
         put_home_hold_sec=0.0,
+        put_tilt_z_left_deg=0.0,
+        put_tilt_z_right_deg=0.0,
+        put_tilt_y_left_deg=0.0,
+        put_tilt_y_right_deg=0.0,
         left_home_xyz=(0.25, 0.25, 0.81),
         right_home_xyz=(0.25, -0.25, 0.81),
         ik_orientation_quat=(0.0, 0.0, 0.0, 1.0),

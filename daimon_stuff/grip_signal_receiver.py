@@ -35,6 +35,11 @@ CALIBRATION_SOURCE_ATTR = "_calibration_source"
 CALIBRATION_INVALIDATED_ATTR = "_calibration_invalidated"
 CALIBRATION_CACHE_PATH = PROJECT_ROOT / "daimon_stuff" / ".gripper_calibration_cache.json"
 
+MOTOR_ERROR_DESCRIPTIONS = {
+    1: "欠压/供电电压过低",
+    8: "电机过温",
+}
+
 
 def clamp(value: int | float, low: int | float, high: int | float):
     return max(low, min(high, value))
@@ -287,6 +292,44 @@ def get_init_error(args: argparse.Namespace) -> str:
     return str(getattr(args, INIT_ERROR_ATTR, "") or "").strip()
 
 
+def describe_motor_error(error_status: int) -> str:
+    descriptions = [
+        description
+        for bit, description in MOTOR_ERROR_DESCRIPTIONS.items()
+        if error_status & bit
+    ]
+    return ", ".join(descriptions) if descriptions else "未知电机故障"
+
+
+def recover_motor_fault(args: argparse.Namespace, grip: LingkongGrip) -> bool:
+    read_error = getattr(grip, "read_error_status", None)
+    clear_error = getattr(grip, "clear_motor_error", None)
+    if not callable(read_error) or not callable(clear_error):
+        return True
+
+    error_status = int(read_error())
+    if error_status == 0:
+        return True
+
+    detail = describe_motor_error(error_status)
+    print(
+        f"检测到电机故障: error_status={error_status} ({detail})；尝试清除锁存故障",
+        flush=True,
+    )
+    if clear_error(timeout=1.0):
+        print("电机故障已清除，重新验证夹爪状态", flush=True)
+        return True
+
+    error_status = int(read_error())
+    detail = describe_motor_error(error_status)
+    set_init_error(
+        args,
+        f"电机故障无法清除: error_status={error_status} ({detail})；"
+        "请检查夹爪供电、急停、驱动器和机械卡阻，禁止继续找零",
+    )
+    return False
+
+
 def init_homing_fallback(
     args: argparse.Namespace,
     grip: LingkongGrip,
@@ -380,6 +423,15 @@ def init_known_gripper(args: argparse.Namespace, *, command: str) -> LingkongGri
     low = -args.calibration_tolerance
     high = 1000 + args.calibration_tolerance
     if pos == -1 or pos < low or pos > high:
+        if pos == -1 and not recover_motor_fault(args, grip):
+            grip.close(reset_torque=False)
+            return None
+        if pos == -1:
+            time.sleep(0.1)
+            pos = grip.read_pos()
+            if low <= pos <= high:
+                print(f"故障恢复后 SDK 位置验证通过: pos={pos}", flush=True)
+                return grip
         set_init_error(args, f"SDK position validation failed: pos={pos}, expected={low}..{high}")
         if getattr(args, CALIBRATION_SOURCE_ATTR, "") == "cache":
             invalidate_cached_calibration(args, f"position {pos} outside {low}..{high}")

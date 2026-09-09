@@ -153,3 +153,37 @@ def test_cached_gripper_starts_grip_without_reinitializing_or_closing(monkeypatc
     assert result == 0
     assert grip.commands[0] == ("move_to_pos", args.min_pos)
     assert grip.closed is False
+
+
+class FaultGrip:
+    def __init__(self, error_status: int, clear_result: bool) -> None:
+        self.error_status = error_status
+        self.clear_result = clear_result
+        self.clear_calls = []
+
+    def read_error_status(self) -> int:
+        return self.error_status
+
+    def clear_motor_error(self, timeout: float) -> bool:
+        self.clear_calls.append(timeout)
+        if self.clear_result:
+            self.error_status = 0
+        return self.clear_result
+
+
+def test_motor_fault_is_cleared_before_motion(capsys) -> None:
+    grip = FaultGrip(error_status=1, clear_result=True)
+    args = Namespace()
+
+    assert grip_signal_receiver.recover_motor_fault(args, grip) is True
+    assert grip.clear_calls == [1.0]
+    assert "电机故障已清除" in capsys.readouterr().out
+
+
+def test_persistent_motor_fault_blocks_homing(capsys) -> None:
+    grip = FaultGrip(error_status=1, clear_result=False)
+    args = Namespace()
+
+    assert grip_signal_receiver.recover_motor_fault(args, grip) is False
+    assert "欠压/供电电压过低" in grip_signal_receiver.get_init_error(args)
+    assert "禁止继续找零" in capsys.readouterr().out

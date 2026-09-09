@@ -41,9 +41,7 @@ from grasp_core.communication.joint_trajectory_csv import (
 from grasp_core.core.pose_math import (
     PoseWaypoint,
     checked_position,
-    ik_downward_tilt_deg_for_hand,
-    ik_downward_tilt_y_deg_for_hand,
-    ik_wrist_orientation_quat,
+    ik_home_wrist_orientation_quat,
     normalize_object_type,
     normalize_quaternion,
     quaternion_angle_rad,
@@ -1240,7 +1238,7 @@ def publish_home_request_ik_target(
         return status
 
     position = np.asarray(home_xyz, dtype=np.float64)
-    orientation = ik_wrist_orientation_quat(args, hand=hand)
+    orientation = ik_home_wrist_orientation_quat(args, hand=hand)
     # Directly publish the single home target (no multi-waypoint home path)
     home_waypoints = [(position, orientation)]
     count = publish_request_ik_target(
@@ -1261,8 +1259,9 @@ def publish_home_request_ik_target(
 
     topic = args.left_target_topic if hand == "left" else args.right_target_topic
     qx, qy, qz, qw = orientation
-    tilt_deg = ik_downward_tilt_deg_for_hand(args, hand)
-    tilt_y_deg = ik_downward_tilt_y_deg_for_hand(args, hand)
+    hand_name = "left" if str(hand).strip().lower() == "left" else "right"
+    tilt_z_deg = float(getattr(args, f"home_tilt_z_{hand_name}_deg", 0.0))
+    tilt_y_deg = float(getattr(args, f"home_tilt_y_{hand_name}_deg", 0.0))
     status = (
         f"Published {hand} home target "
         f"xyz=({position[0]:.3f},{position[1]:.3f},{position[2]:.3f})m"
@@ -1273,7 +1272,7 @@ def publish_home_request_ik_target(
         f"waypoints={len(home_waypoints)} "
         f"position=({position[0]:.4f}, {position[1]:.4f}, {position[2]:.4f}) m "
         f"orientation_xyzw=({qx:.5f}, {qy:.5f}, {qz:.5f}, {qw:.5f}) "
-        f"tilt={tilt_deg:.2f}deg/{args.ik_downward_tilt_axis}+y={tilt_y_deg:.2f}deg/"
+        f"home_tilt=z={tilt_z_deg:.2f}deg/y={tilt_y_deg:.2f}deg/"
         f"{args.ik_downward_tilt_frame}",
         flush=True,
     )
