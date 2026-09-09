@@ -78,6 +78,8 @@ KEY_RELEASE = ord("p")
 KEY_PAUSE = ord("s")
 
 DASHBOARD_WINDOW = "RealSense + SAM3 + FlowPose"
+RAW_FLOWPOSE_WINDOW = "Raw FlowPose"
+RAW_FLOWPOSE_WINDOW_SIZE = (480, 360)
 
 
 class RetryStage(str, Enum):
@@ -105,6 +107,7 @@ class RuntimeState:
     sam_result: Sam3FrameResult | None = None
     sam_overlay: np.ndarray | None = None
     flowpose_overlay: np.ndarray | None = None
+    raw_flowpose_overlay: np.ndarray | None = None
     base_targets: list[TargetObjectPose] = field(default_factory=list)
     status: str = "Ready"
 
@@ -396,6 +399,7 @@ class GraspDemoApp:
         self.state.sam_result = None
         self.state.sam_overlay = None
         self.state.flowpose_overlay = None
+        self.state.raw_flowpose_overlay = None
         self.state.base_targets.clear()
 
         # print(self.state)
@@ -465,6 +469,13 @@ class GraspDemoApp:
 
         if s.flowpose_future is not None:
             flowpose_futures = [s.flowpose_future]
+            if s.flowpose_future.done():
+                try:
+                    s.raw_flowpose_overlay = (
+                        s.flowpose_future.result().raw_visualization
+                    )
+                except Exception:  # collect_flowpose_results reports the traceback
+                    s.raw_flowpose_overlay = None
             s.flowpose_overlay, s.base_targets, s.status = collect_flowpose_results(
                 flowpose_futures,
                 s.flowpose_overlay,
@@ -999,6 +1010,11 @@ class GraspDemoApp:
             put_enabled=bool(getattr(self.args, "enable_put_after_grasp", True)),
         )
         cv2.imshow(DASHBOARD_WINDOW, dashboard)
+        if (
+            bool(getattr(self.args, "show_raw_flowpose_window", False))
+            and self.state.raw_flowpose_overlay is not None
+        ):
+            cv2.imshow(RAW_FLOWPOSE_WINDOW, self.state.raw_flowpose_overlay)
 
     def publish_manual_home(self, hand: str) -> None:
         if (self.grasp_future is not None or self.gripper_future is not None
@@ -1122,6 +1138,9 @@ class GraspDemoApp:
     def run(self) -> int:
         """Run the real-time event loop until Q or ESC is pressed."""
         cv2.namedWindow(DASHBOARD_WINDOW, cv2.WINDOW_NORMAL)
+        if bool(getattr(self.args, "show_raw_flowpose_window", False)):
+            cv2.namedWindow(RAW_FLOWPOSE_WINDOW, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(RAW_FLOWPOSE_WINDOW, *RAW_FLOWPOSE_WINDOW_SIZE)
 
         while True:
             bundle = self.camera.read_latest()

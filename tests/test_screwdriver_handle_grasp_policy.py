@@ -3,6 +3,7 @@ from argparse import Namespace
 import numpy as np
 
 from grasp_core.core.pose_math import quaternion_to_rotation_matrix
+from grasp_core.core.long_object_axes import canonical_long_object_pose
 from grasp_core.core.robot_target_pose import TargetObjectPose
 from grasp_core.planning.grasp_pose import make_gripper_target_pose
 from grasp_core.planning.tool_pick_templates import build_pick_template_waypoints
@@ -129,11 +130,11 @@ def test_screwdriver_handle_template_waypoints_keep_y_tilt_ignore_yaml_quaternio
         assert position[2] > target.base_pose[2, 3]
 
 
-def test_screwdriver_handle_waypoint_y_offset_is_hand_independent() -> None:
+def test_screwdriver_handle_waypoint_x_long_axis_offset_is_hand_independent() -> None:
     target = make_screwdriver_target(long_axis=np.array([0.2, 1.0, 0.0]))
     relative_waypoints = [
         (
-            np.array([0.0, -0.05, 0.03]),
+            np.array([-0.05, 0.0, 0.03]),
             (0.0, 0.0, 0.0, 1.0),
             1.0,
         ),
@@ -162,7 +163,7 @@ def test_screwdriver_handle_waypoint_y_offset_is_hand_independent() -> None:
     object_pose = screwdriver_handle_z_up_object_pose(target.base_pose, target.size)
     expected_position = (
         object_pose
-        @ np.array([0.0, -0.05, 0.03, 1.0], dtype=np.float64)
+        @ np.array([-0.05, 0.0, 0.03, 1.0], dtype=np.float64)
     )[:3]
     np.testing.assert_allclose(
         left_waypoints[0][0],
@@ -212,11 +213,12 @@ def test_screwdriver_handle_uses_z_up_local_y_as_long_axis() -> None:
     )
     size = np.array([0.0444459393620491, 0.020002959296107292, 0.10555826872587204])
 
-    assert screwdriver_handle_long_axis_index(size) == 1
+    assert screwdriver_handle_long_axis_index(size) == 0
+    pose = canonical_long_object_pose(pose, source_long_axis=0)[0]
     long_axis = screwdriver_handle_long_axis(pose, size)
 
     z_up_pose = screwdriver_handle_z_up_object_pose(pose, size)
-    expected = z_up_pose[:3, 1]
+    expected = z_up_pose[:3, 0]
     np.testing.assert_allclose(long_axis, expected)
 
 
@@ -235,7 +237,7 @@ def test_screwdriver_handle_real_capture_closing_x_is_not_long_axis() -> None:
         label="red_screwdriver_handle",
         frame_id="red_screwdriver_handle_1",
         camera_pose=np.eye(4),
-        base_pose=pose,
+        base_pose=canonical_long_object_pose(pose, source_long_axis=0)[0],
         size=size,
     )
 
@@ -252,7 +254,7 @@ def test_screwdriver_handle_real_capture_closing_x_is_not_long_axis() -> None:
     assert result is not None
     gripper_pose, metadata = result
     closing_axis = closing_axis_from_orientation(gripper_pose[:3, :3])
-    assert metadata.long_axis_index == 1
+    assert metadata.long_axis_index == 0
     assert abs(float(closing_axis @ metadata.long_axis)) < 1e-8
 
 
@@ -283,7 +285,7 @@ def test_screwdriver_handle_captures_close_perpendicular_to_flowpose_x_long_axis
             label="yellow_screwdriver_handle",
             frame_id=f"yellow_screwdriver_handle_{index}",
             camera_pose=pose,
-            base_pose=pose,
+            base_pose=canonical_long_object_pose(pose, source_long_axis=0)[0],
             size=np.array([0.03, 0.02, 0.10], dtype=np.float64),
         )
 
@@ -299,7 +301,7 @@ def test_screwdriver_handle_captures_close_perpendicular_to_flowpose_x_long_axis
 
         assert result is not None
         gripper_pose, metadata = result
-        assert metadata.long_axis_index == 1
+        assert metadata.long_axis_index == 0
         raw_x_long_axis = pose[:3, 0].copy()
         raw_x_long_axis[2] = 0.0
         raw_x_long_axis /= np.linalg.norm(raw_x_long_axis)
@@ -309,10 +311,10 @@ def test_screwdriver_handle_captures_close_perpendicular_to_flowpose_x_long_axis
         )
         closing_axis = closing_axis_from_orientation(gripper_pose[:3, :3])
         assert (
-            abs(float(closing_axis @ metadata.object_pose[:3, 1]))
+            abs(float(closing_axis @ metadata.object_pose[:3, 0]))
             < 1e-8
         )
-        assert abs(float(abs(closing_axis @ metadata.object_pose[:3, 0]) - 1.0)) < 1e-8
+        assert abs(float(abs(closing_axis @ metadata.object_pose[:3, 1]) - 1.0)) < 1e-8
 
 
 def test_pen_uses_screwdriver_handle_long_object_policy_by_default() -> None:
@@ -331,10 +333,10 @@ def test_pen_uses_screwdriver_handle_long_object_policy_by_default() -> None:
     assert result is not None
     gripper_pose, metadata = result
     closing_axis = closing_axis_from_orientation(gripper_pose[:3, :3])
-    assert metadata.closing_axis_name == "x"
-    assert metadata.closing_axis_index == 0
+    assert metadata.closing_axis_name == "y"
+    assert metadata.closing_axis_index == 1
     assert abs(float(closing_axis @ metadata.long_axis)) < 1e-8
-    assert abs(float(abs(closing_axis @ metadata.object_pose[:3, 0]) - 1.0)) < 1e-8
+    assert abs(float(abs(closing_axis @ metadata.object_pose[:3, 1]) - 1.0)) < 1e-8
 
 
 def test_pen_closing_axis_can_be_configured_to_policy_y(monkeypatch) -> None:
@@ -345,11 +347,11 @@ def test_pen_closing_axis_can_be_configured_to_policy_y(monkeypatch) -> None:
         (
             LongObjectGraspPolicy(
                 keyword="screwdriver_handle",
-                closing_axis="x",
+                closing_axis="y",
             ),
             LongObjectGraspPolicy(
                 keyword="pen",
-                closing_axis="y",
+                closing_axis="x",
             ),
         ),
     )
@@ -367,8 +369,8 @@ def test_pen_closing_axis_can_be_configured_to_policy_y(monkeypatch) -> None:
     assert result is not None
     gripper_pose, metadata = result
     closing_axis = closing_axis_from_orientation(gripper_pose[:3, :3])
-    assert metadata.closing_axis_name == "y"
-    assert metadata.closing_axis_index == 1
+    assert metadata.closing_axis_name == "x"
+    assert metadata.closing_axis_index == 0
     assert abs(float(abs(closing_axis @ metadata.long_axis) - 1.0)) < 1e-8
 
 
@@ -424,6 +426,7 @@ def make_screwdriver_target(
     y_axis = y_axis / np.linalg.norm(y_axis)
     z_axis = np.cross(x_axis, y_axis)
     pose[:3, :3] = np.column_stack((x_axis, y_axis, z_axis))
+    pose = canonical_long_object_pose(pose, source_long_axis=0)[0]
     pose[:3, 3] = [0.2, 0.1, 0.8]
     return TargetObjectPose(
         label=label,

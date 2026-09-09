@@ -51,8 +51,8 @@ def apply_cube_z_symmetry_grasp_policy(
     """Select a FlowPose-equivalent pose for the active grasp policy.
 
     The pose is made Z-up first.  Generic objects use the local -X gripper
-    facing rule.  Screwdriver handles keep their raw FlowPose pose so the
-    dedicated screwdriver policy can choose the long axis from size + pose.
+    facing rule. Long objects bypass this selection: their perception frame
+    is normalized separately and the dedicated policy aligns the closing axis.
     """
 
     del relative_pick_waypoints

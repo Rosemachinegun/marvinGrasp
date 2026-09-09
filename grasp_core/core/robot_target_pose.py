@@ -12,6 +12,8 @@ from typing import Iterable
 
 import numpy as np
 
+from grasp_core.core.long_object_axes import canonical_long_object_pose, is_long_object
+
 
 @dataclass(frozen=True)
 class CameraExtrinsic:
@@ -127,6 +129,11 @@ def make_target_object_pose(
     if camera_pose.shape != (4, 4):
         raise ValueError(f"{label} pose must be 4x4, got {camera_pose.shape}.")
     base_pose = base_to_camera @ camera_pose
+    # Normalize historical captures as well as live targets. Published long
+    # objects use X for length throughout perception, templates and grasping.
+    if is_long_object(label):
+        base_pose, _ = canonical_long_object_pose(base_pose, source_long_axis=0)
+        camera_pose = np.linalg.inv(base_to_camera) @ base_pose
     return TargetObjectPose(
         label=label,
         frame_id=frame_id,

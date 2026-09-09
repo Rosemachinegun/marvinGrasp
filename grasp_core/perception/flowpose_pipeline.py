@@ -20,6 +20,7 @@ import cv2
 import numpy as np
 
 from grasp_core.core.pose_math import select_ik_hand
+from grasp_core.core.long_object_axes import canonical_long_object_pose, is_long_object
 from grasp_core.core.robot_target_pose import make_target_object_pose
 from grasp_core.perception.realsense_sam3 import (
     DEFAULT_BBOX_CONTAINMENT_THRESHOLD,
@@ -131,6 +132,7 @@ class FlowPoseResult:
     visualize_save_sec: float
     total_elapsed_sec: float
     visualization: np.ndarray
+    raw_visualization: np.ndarray
     result_path: Path
     visualization_path: Path
 
@@ -544,6 +546,10 @@ class FlowPoseRunner:
             "objects": objects,
             "pose_all": pose_all,
             "length_all": length_all,
+            # Calibration may permute pose axes without permuting length_all.
+            # Long objects must use the original, paired pose and dimensions.
+            "raw_pose_all": to_jsonable(self.inferencer.last_raw_pose),
+            "raw_length_all": length_all,
             "elapsed_sec": round(time.time() - t0, 4),
         }
 
@@ -587,6 +593,7 @@ class FlowPoseRunner:
         labels: list[str],
         pose_all: Any,
         length_all: Any,
+        normalized_indices: list[int] | None = None,
     ) -> np.ndarray:
         vis = image_bgr.copy()
         masks_bool = normalize_instance_masks(masks)
@@ -615,6 +622,10 @@ class FlowPoseRunner:
                         bbox_poses = np.asarray(raw_pose, dtype=np.float32)
                         if bbox_poses.shape[0] != poses.shape[0]:
                             bbox_poses = None
+                        elif normalized_indices:
+                            bbox_poses = bbox_poses.copy()
+                            for index in normalized_indices:
+                                bbox_poses[index] = poses[index]
                 vis = self.visualize_detections(
                     vis,
                     poses,
@@ -850,6 +861,14 @@ def run_flowpose_job(
         labels=flowpose_input.labels,
         scores=flowpose_input.scores,
     )
+    raw_visualization = runner.visualize(
+        flowpose_input.color_bgr,
+        flowpose_input.masks,
+        flowpose_input.labels,
+        output.get("raw_pose_all") or output["pose_all"],
+        output.get("raw_length_all") or output["length_all"],
+    )
+    output = apply_long_object_axes_to_flowpose_output(output, base_to_camera)
     output = apply_cube_z_symmetry_to_flowpose_output(output, args, base_to_camera)
     visualize_save_start = time.perf_counter()
     visualization = runner.visualize(
@@ -858,6 +877,7 @@ def run_flowpose_job(
         flowpose_input.labels,
         output["pose_all"],
         output["length_all"],
+        normalized_indices=output.get("long_object_normalized_indices"),
     )
     result_path, visualization_path = save_flowpose_result(
         sam_result,
@@ -879,9 +899,58 @@ def run_flowpose_job(
         visualize_save_sec=round(visualize_save_sec, 4),
         total_elapsed_sec=round(total_elapsed_sec, 4),
         visualization=visualization,
+        raw_visualization=raw_visualization,
         result_path=result_path,
         visualization_path=visualization_path,
     )
+
+
+def apply_long_object_axes_to_flowpose_output(
+    output: dict[str, Any],
+    base_to_camera: np.ndarray | None,
+) -> dict[str, Any]:
+    """Canonicalize long objects before visualization, JSON export and IK.
+
+    This is independent of cube symmetry and the selected hand. For historical
+    output without raw poses, use the legacy calibrated X-long convention;
+    never interpret its unpermuted dimensions as source-axis indices.
+    """
+    objects = list(output.get("objects") or [])
+    if not any(is_long_object(obj.name) for obj in objects):
+        return output
+    if base_to_camera is None:
+        raise ValueError("long-object Z-up normalization requires camera extrinsics")
+    transform = np.asarray(base_to_camera, dtype=np.float64)
+    inverse = np.linalg.inv(transform)
+    poses = list(output.get("pose_all") or [])
+    sizes = list(output.get("length_all") or [])
+    raw_poses = output.get("raw_pose_all")
+    raw_sizes = output.get("raw_length_all")
+    normalized_indices = []
+    for index, obj in enumerate(objects):
+        if not is_long_object(obj.name):
+            continue
+        has_raw = raw_poses is not None and raw_sizes is not None
+        source_pose = raw_poses[index] if has_raw else obj.pose
+        source_size = raw_sizes[index] if has_raw else None
+        pose, dimensions = canonical_long_object_pose(
+            transform @ np.asarray(source_pose, dtype=np.float64),
+            source_size,
+            source_long_axis=None if has_raw else 0,
+        )
+        camera_pose = (inverse @ pose).tolist()
+        size = dimensions.tolist() if dimensions is not None else list(obj.size)
+        objects[index] = FlowPoseObject(obj.name, list(obj.obj_id), camera_pose, size, obj.score)
+        poses[index] = camera_pose
+        sizes[index] = size
+        normalized_indices.append(index)
+    return {
+        **output,
+        "objects": objects,
+        "pose_all": poses,
+        "length_all": sizes,
+        "long_object_normalized_indices": normalized_indices,
+    }
 
 
 def apply_cube_z_symmetry_to_flowpose_output(
@@ -975,6 +1044,9 @@ def save_flowpose_result(
         "objects": [asdict(obj) for obj in output["objects"]],
         "pose_all": output["pose_all"],
         "length_all": output["length_all"],
+        "raw_pose_all": output.get("raw_pose_all"),
+        "raw_length_all": output.get("raw_length_all"),
+        "long_object_axis_convention": "base_z_up_x_long_y_short_v1",
         "elapsed_sec": output["elapsed_sec"],
         "flowpose_timing": {
             "runner_init_sec": output.get("runner_init_sec", 0.0),

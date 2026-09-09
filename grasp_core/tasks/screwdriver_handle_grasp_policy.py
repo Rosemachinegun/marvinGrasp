@@ -3,15 +3,18 @@
 
 Coordinate conventions
 ----------------------
-FlowPose:
-    local X = physical long axis of the screwdriver handle.
 
-Grasp-policy frame:
-    local Y = physical long axis
+Published perception frame:
+    local X = horizontal physical long axis
+    local Y = horizontal short axis
     local Z = world +Z
-    local X = Y x Z
 
-The sign of policy +Y is object-centric and follows FlowPose's raw long-axis
+Grasp-policy frame (same as the published perception frame):
+    local X = physical long axis
+    local Y = physical short axis
+    local Z = world +Z
+
+The sign of policy +X is object-centric and follows FlowPose's raw long-axis
 sign.  The active arm is used only to select an equivalent wrist yaw / IK
 orientation; it must not change the position-offset direction.
 
@@ -53,8 +56,8 @@ class LongObjectGraspPolicy:
     """Per-object grasp policy knobs for long, thin objects.
 
     closing_axis is in the reconstructed policy frame and must be "x" or "y":
-        x -> close across the object, perpendicular to the long axis
-        y -> close along the object long axis
+        x -> close along the object long axis
+        y -> close across the object, along the short axis
     """
 
     keyword: str
@@ -64,7 +67,7 @@ class LongObjectGraspPolicy:
 LONG_OBJECT_POLICIES = (
     LongObjectGraspPolicy(
         keyword="screwdriver_handle",
-        closing_axis="x",
+        closing_axis="y",
     ),
     LongObjectGraspPolicy(
         keyword="pen",
@@ -95,10 +98,9 @@ GRIPPER_APPROACH_AXIS_INDEX = 2
 
 # FlowPose screwdriver convention:
 #
-# Raw local X is the screwdriver long-axis reference.  The rebuilt z-up policy
-# frame stores that long axis in local Y.
+# Published local X is the long axis and local Y is the short axis.
 FLOWPOSE_LONG_AXIS_INDEX = 0
-POLICY_LONG_AXIS_INDEX = 1
+POLICY_LONG_AXIS_INDEX = 0
 
 
 @dataclass(frozen=True)
@@ -109,18 +111,18 @@ class ScrewdriverHandleGraspPolicyResult:
 
     # Reconstructed Z-up policy frame:
     #
-    # X = lateral direction
-    # Y = long axis
+    # X = long axis
+    # Y = lateral/short direction
     # Z = world up
     object_pose: np.ndarray
 
     # +1 left, -1 right
     side_sign: float
 
-    # Policy X axis, used as desired physical gripper closing direction.
+    # Policy Y axis, used as desired physical gripper closing direction.
     side_axis: np.ndarray
 
-    # Policy Y axis, physical screwdriver long axis.
+    # Policy X axis, physical screwdriver long axis.
     long_axis: np.ndarray
 
     long_axis_index: int
@@ -199,11 +201,11 @@ def make_screwdriver_handle_gripper_pose(
 
     # After screwdriver_handle_z_up_object_pose():
     #
-    # object_pose[:, 0] = lateral axis
-    # object_pose[:, 1] = physical long axis
+    # object_pose[:, 0] = physical long axis
+    # object_pose[:, 1] = lateral/short axis
     # object_pose[:, 2] = world +Z
-    side_axis = object_pose[:3, 0].copy()
-    long_axis = object_pose[:3, 1].copy()
+    long_axis = object_pose[:3, 0].copy()
+    side_axis = object_pose[:3, 1].copy()
     closing_axis_index = policy_axis_index(policy.closing_axis)
     closing_axis = object_pose[:3, closing_axis_index].copy()
 
@@ -260,13 +262,13 @@ def build_screwdriver_handle_pick_waypoints(
 
     Relative XYZ positions are interpreted in the reconstructed policy frame:
 
-        X = lateral direction
-        Y = physical long axis
+        X = physical long axis
+        Y = lateral/short direction
         Z = world up
 
     Therefore:
-        relative Y -> offset along the screwdriver long axis
-        relative X -> lateral offset across the screwdriver
+        relative X -> offset along the screwdriver long axis
+        relative Y -> lateral offset across the screwdriver
         relative Z -> vertical offset
     """
 
@@ -380,15 +382,15 @@ def screwdriver_handle_z_up_object_pose(
     *,
     hand: str | None = None,
 ) -> np.ndarray:
-    """Build a Z-up right-handed frame with policy Y as the long axis.
+    """Validate and return the already-canonical long-object frame.
 
     Convention:
-        Y = physical long axis
+        X = physical long axis
+        Y = physical short axis
         Z = world +Z
-        X = Y x Z
 
-    The long-axis sign is intentionally preserved from FlowPose's raw local X.
-    This keeps relative waypoint Y offsets object-centric: a configured -Y
+    The long-axis sign is intentionally preserved from published local X.
+    This keeps relative waypoint X offsets object-centric: a configured -X
     offset always reaches the same physical end of the object regardless of
     object placement or selected arm.
 
@@ -401,43 +403,20 @@ def screwdriver_handle_z_up_object_pose(
         raise ValueError(f"unsupported hand: {hand!r}")
 
     del size
-
-    long_axis = horizontal_unit_vector(
-        pose[:3, FLOWPOSE_LONG_AXIS_INDEX]
-    )
-    if long_axis is None:
-        raise ValueError(
-            "screwdriver long axis has no valid horizontal component"
-        )
-
-    z_axis = WORLD_Z_AXIS.copy()
-
-    # Right-handed frame:
-    #
-    # X × Y = Z
-    # therefore X = Y × Z.
-    lateral_axis = normalized(np.cross(long_axis, z_axis))
-    long_axis = normalized(np.cross(z_axis, lateral_axis))
-
-    pose[:3, :3] = np.column_stack(
-        (
-            lateral_axis,
-            long_axis,
-            z_axis,
-        )
-    )
-
+    reason = validate_pose_matrix(pose)
+    if reason is not None:
+        raise ValueError(f"invalid long-object pose: {reason}")
+    if not np.allclose(pose[:3, 2], WORLD_Z_AXIS, atol=1e-5):
+        raise ValueError("long-object pose must already be Z-up")
+    if abs(float(pose[2, FLOWPOSE_LONG_AXIS_INDEX])) > 1e-5:
+        raise ValueError("long-object X long axis must already be horizontal")
     return pose
 
 
 def screwdriver_handle_long_axis_index(
     size: np.ndarray | None,
 ) -> int:
-    """Return the long-axis index in the reconstructed z-up policy frame.
-
-    Kept for callers/tests that need an index, but it is deliberately not a
-    FlowPose source-axis index.
-    """
+    """Return the long-axis index in the unified Z-up object frame."""
 
     del size
     return POLICY_LONG_AXIS_INDEX
@@ -451,7 +430,7 @@ def screwdriver_handle_long_axis(
 ) -> np.ndarray:
     """Return signed horizontal physical long axis.
 
-    The returned axis is local Y after rebuilding the screwdriver z-up frame.
+    The returned axis is local X in the canonical long-object frame.
 
     The returned direction is object-centric and does not depend on the active
     hand.  ``hand`` is accepted for backward-compatible validation only.
@@ -495,11 +474,11 @@ def screwdriver_handle_long_axis(
 def screwdriver_handle_lateral_axis(
     object_pose: np.ndarray,
 ) -> np.ndarray:
-    """Return policy local X, the lateral/closing direction.
+    """Return policy local Y, the lateral/closing direction.
 
     screwdriver_handle_z_up_object_pose() already defines:
 
-        X = Y x Z
+        Y = Z x X
 
     so X must not be flipped independently, otherwise the frame would
     become left-handed.
@@ -511,7 +490,7 @@ def screwdriver_handle_lateral_axis(
     )
 
     return normalized(
-        pose[:3, 0]
+        pose[:3, 1]
     )
 
 

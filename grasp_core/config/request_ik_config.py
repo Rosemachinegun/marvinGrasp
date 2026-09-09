@@ -292,6 +292,7 @@ class GraspConfig:
     ik_downward_tilt_frame: str = "local"
     visualize_grasp_path: bool = True
     save_joint_trajectory_csv: bool = False
+    show_raw_flowpose_window: bool = True
 
 
 DEFAULT_GRASP_CONFIG = GraspConfig()
@@ -527,6 +528,14 @@ def tool_grasp_defaults_from_yaml(path: Path) -> GraspConfig:
             fallback=cfg.save_joint_trajectory_csv,
             name="save_joint_trajectory_csv",
         ),
+        show_raw_flowpose_window=parse_config_bool(
+            defaults.get(
+                "show_raw_flowpose_window",
+                cfg.show_raw_flowpose_window,
+            ),
+            fallback=cfg.show_raw_flowpose_window,
+            name="show_raw_flowpose_window",
+        ),
     )
 
 
@@ -564,6 +573,7 @@ def apply_grasp_config_defaults(args: argparse.Namespace) -> argparse.Namespace:
         f"{args.ik_downward_tilt_frame} "
         f"side_approach_policy=disabled "
         f"visualize_grasp_path={bool(args.visualize_grasp_path)} "
+        f"show_raw_flowpose_window={bool(args.show_raw_flowpose_window)} "
         f"save_joint_trajectory_csv={bool(args.save_joint_trajectory_csv)}",
         flush=True,
     )
@@ -793,7 +803,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--auto-pipeline-on-a",
         type=parse_bool,
-        default=True,
+        default=False,
         metavar="TRUE/FALSE",
         help=(
             "TRUE makes A run capture -> SAM3 -> FlowPose -> grasp automatically; "
@@ -944,6 +954,16 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Override tool.yaml defaults.save_joint_trajectory_csv. TRUE saves "
             "one timestamped joint trajectory CSV row per trajectory frame."
+        ),
+    )
+    parser.add_argument(
+        "--show-raw-flowpose-window",
+        type=parse_optional_bool,
+        default=None,
+        metavar="TRUE/FALSE",
+        help=(
+            "Override tool.yaml defaults.show_raw_flowpose_window. TRUE opens "
+            "a small window with unnormalized FlowPose pose/size output."
         ),
     )
     parser.add_argument(
