@@ -264,7 +264,7 @@ Right arm → grasp from right / outside toward inside
 
 抓取问题更加依赖物体的物理长轴。
 
-系统根据预测尺寸动态寻找：
+系统根据flowpose输出的包围盒寻找：
 
 ```python
 long_axis_index = argmax(size)
