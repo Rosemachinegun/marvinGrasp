@@ -1936,7 +1936,41 @@ Detect
 闭环。
 
 ---
+1
+cd /home/kewei/apex-main/apex
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+export APEX_ROBOT_PLATFORM=pro
 
+ros2 launch marvin_ros_control bringup_control_matrix.launch.py \
+  arm_model:=m6_696 \
+  base_model:=new 
+  
+2
+cd /home/kewei/apex-main/apex
+source /opt/ros/humble/setup.bash
+source install/setup.bash 
+export APEX_ROBOT_PLATFORM=pro
+
+ros2 launch marvin_qp_controller request_ik_tester.launch.py \
+  arm_model:=m6_696 \
+  base_model:=new \
+  scene_file:=matrix/m6_696.xml \
+  use_rviz:=true \
+  use_interactive_marker:=true \
+  joint_cmd_mux_initial_input:=1
+  
+3
+cd /home/kewei/apex-main/apex
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+export APEX_ROBOT_PLATFORM=pro
+
+ros2 service call /control/set_ready std_srvs/srv/Trigger "{}"
+ros2 service call /control/set_mode marvin_msgs/srv/Int "{data: 1}"
+ros2 service call /control/set_input marvin_msgs/srv/Int "{data: 1}"    
+  use_rviz:=true
+  
 # 34. 推荐迁移原则
 
 一句话总结：
