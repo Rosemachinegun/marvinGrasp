@@ -28,6 +28,7 @@ class TabletCommand(str, Enum):
 
     PERCEIVE = "perceive"
     GRASP = "grasp"
+    VOICE = "voice"
     HOME_LEFT = "home_left"
     HOME_RIGHT = "home_right"
     STOP = "stop"
@@ -78,6 +79,9 @@ class TabletTaskLoopBridge:
 
             TabletCommand.GRASP:
                 "Requested: Perception + Autonomous Grasp",
+
+            TabletCommand.VOICE:
+                "Requested: 4-second voice command",
 
             TabletCommand.HOME_LEFT:
                 "Requested: Left Arm Home",
@@ -942,6 +946,27 @@ footer {
     font-weight: 600 !important;
 }
 
+#voice-btn {
+    min-height: 64px !important;
+    margin-top: 10px;
+    border: 1px solid rgba(215, 179, 106, .35) !important;
+    border-radius: 17px !important;
+    color: #f3e3c3 !important;
+    background: rgba(90, 68, 31, .36) !important;
+    font-size: 15px !important;
+    font-weight: 600 !important;
+}
+
+#voice-btn:hover {
+    transform: translateY(-2px);
+}
+
+.voice-note {
+    margin: 7px 3px 0;
+    color: var(--muted);
+    font-size: 11px;
+}
+
 
 /* =========================================================================
    Home / Stop
@@ -1483,6 +1508,8 @@ FOOTER_HTML = r"""
 
 def create_tablet_interface(
     bridge: TabletTaskLoopBridge,
+    *,
+    voice_enabled: bool = False,
 ):
     """Build the tablet browser interface.
 
@@ -1651,6 +1678,15 @@ def create_tablet_interface(
                     elem_id="grasp-btn",
                 )
 
+                if voice_enabled:
+                    voice = gr.Button(
+                        "VOICE GRASP · RECORD 4 S",
+                        elem_id="voice-btn",
+                    )
+                    gr.HTML(
+                        '<div class="voice-note">Uses the microphone on the robot computer.</div>'
+                    )
+
                 # -------------------------------------------------------------
                 # Perception Only
                 # -------------------------------------------------------------
@@ -1760,6 +1796,12 @@ def create_tablet_interface(
             ],
         )
 
+        if voice_enabled:
+            voice.click(
+                lambda: bridge.request(TabletCommand.VOICE),
+                outputs=[status, activity],
+            )
+
         home_left.click(
             lambda:
                 bridge.request(
@@ -1809,17 +1851,20 @@ class TabletWebService:
         bridge: TabletTaskLoopBridge,
         host: str,
         port: int,
+        voice_enabled: bool = False,
     ) -> None:
         self.bridge = bridge
         self.host = host
         self.port = int(port)
+        self.voice_enabled = bool(voice_enabled)
         self.demo = None
 
     def start(self) -> None:
         """Start the tablet web server."""
 
         self.demo = create_tablet_interface(
-            self.bridge
+            self.bridge,
+            voice_enabled=self.voice_enabled,
         )
 
         self.demo.queue(

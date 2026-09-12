@@ -11,6 +11,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from queue import Empty, Full, Queue
+from threading import Event, Thread
 from typing import Any
 
 import cv2
@@ -68,6 +70,7 @@ from grasp_core.tasks.robot_actions import (  # noqa: E402
 )
 from grasp_core.tasks.ribbon_policy import assume_grasp_success  # noqa: E402
 from grasp_core.planning.tool_pick_templates import load_tool_pick_templates  # noqa: E402
+from grasp_core.apps.voice_target_parser import parse_voice_target  # noqa: E402
 
 
 # OpenCV returns a single byte for keyboard input, so normalize to lowercase once.
@@ -81,6 +84,7 @@ KEY_LEFT_HOME = ord("j")
 KEY_GRIP = ord("l")
 KEY_RELEASE = ord("p")
 KEY_PAUSE = ord("s")
+KEY_VOICE = ord("v")
 
 DASHBOARD_WINDOW = "RealSense + SAM3 + FlowPose"
 RAW_FLOWPOSE_WINDOW = "Raw FlowPose"
@@ -137,6 +141,7 @@ class RuntimeState:
     drop_recovery_cancelled: bool = False
     drop_regrasp_pending: bool = False
     continuous_grasp_pending: bool = False
+    voice_target: str | None = None
     # A successful put intentionally leaves this hand at the put pose.  If the
     # next perception result selects the other hand, this one can return HOME
     # while the newly selected hand starts its grasp.
@@ -171,6 +176,11 @@ class GraspDemoApp:
         self.auto_home_future: Future | None = None
         self.auto_home_hand: str | None = None
         self.gripper_interrupted = False
+        self.voice_queue: Queue[str] = Queue(maxsize=1)
+        self.voice_stop = Event()
+        self.voice_cancelled = Event()
+        self.voice_thread: Thread | None = None
+        self.voice_recognizer: Any = None
 
         sam_kwargs, flowpose_kwargs, capture_dir = build_runner_kwargs(args)
         self.sam_kwargs = sam_kwargs
@@ -251,11 +261,131 @@ class GraspDemoApp:
                 self.tablet_bridge,
                 host=str(getattr(self.args, "tablet_ui_host", "0.0.0.0")),
                 port=int(getattr(self.args, "tablet_ui_port", 7860)),
+                voice_enabled=bool(getattr(self.args, "voice_input", False)),
             )
             self.tablet_service.start()
 
+    def request_voice_command(self) -> None:
+        """Start one four-second recording only after V is pressed."""
+        if not bool(getattr(self.args, "voice_input", False)):
+            return
+        if self.voice_busy():
+            self.state.status = "Voice command ignored: robot busy"
+            return
+        if (
+            (self.voice_thread is not None and self.voice_thread.is_alive())
+            or not self.voice_queue.empty()
+        ):
+            self.state.status = "Voice recognition already running"
+            return
+        self.voice_cancelled.clear()
+        self.voice_thread = Thread(
+            target=self._voice_worker,
+            name="voice-stt",
+            daemon=True,
+        )
+        self.voice_thread.start()
+        self.state.status = "Voice recognition starting (4 s recording)"
+
+    def _voice_worker(self) -> None:
+        """Only recognize speech here; the main loop owns all robot decisions."""
+        try:
+            from voice_input import VoiceToText
+
+            if self.voice_recognizer is None:
+                self.voice_recognizer = VoiceToText()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[voice] STT unavailable: {exc}", flush=True)
+            return
+
+        if self.voice_stop.is_set() or self.voice_cancelled.is_set():
+            return
+        try:
+            result = self.voice_recognizer.listen_once(duration=4.0)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[voice] recognition failed: {exc}", flush=True)
+            return
+        if self.voice_stop.is_set() or self.voice_cancelled.is_set():
+            return
+        try:
+            self.voice_queue.put_nowait(result.text)
+        except Full:
+            print(f"[voice] command discarded (queue full): {result.text}", flush=True)
+
+    def voice_busy(self) -> bool:
+        """Whether starting a voice task would overlap an existing workflow."""
+        s = self.state
+        return (
+            s.paused
+            or s.voice_target is not None
+            or s.pipeline_stage is not PipelineStage.IDLE
+            or s.retry_stage is not RetryStage.IDLE
+            or s.replan_pending
+            or s.drop_regrasp_pending
+            or s.continuous_grasp_pending
+            or s.grasp_confirmed
+            or any(is_pending(f) for f in (
+                s.sam_future, s.flowpose_future, self.grasp_future,
+                self.gripper_future, self.manual_home_future, self.auto_home_future,
+            ))
+            or bool(s.recovery_futures)
+            or bool(s.drop_recovery_futures)
+        )
+
+    def handle_voice_commands(self) -> None:
+        """Consume STT results on the camera/robot main thread."""
+        while True:
+            try:
+                text = self.voice_queue.get_nowait()
+            except Empty:
+                return
+            if self.voice_busy():
+                print(f"[voice] busy; command discarded: {text}", flush=True)
+                continue
+            if not text.strip():
+                self.state.status = "Voice: no speech detected"
+                continue
+            target = parse_voice_target(text)
+            if target is None:
+                self.state.status = f"Voice target not recognized: {text}"
+                print(f"[voice] {self.state.status}", flush=True)
+                continue
+            if not bool(getattr(self.args, "enable_put_after_grasp", True)):
+                self.state.status = "Voice grasp requires put-after-grasp enabled"
+                print(f"[voice] {self.state.status}", flush=True)
+                continue
+            self.state.voice_target = target
+            if self.start_pipeline(grasp_on_done=True):
+                print(f"[voice] {text} -> {target}; grasp started", flush=True)
+            else:
+                self.state.voice_target = None
+
+    def finish_voice_task(self) -> None:
+        """Release the dynamic prompt after a one-shot task ends."""
+        self.state.voice_target = None
+
+    def sam_prompt_for_current_task(self) -> str:
+        """Resolve a voice target to labels already backed by tool.yaml templates."""
+        target = self.state.voice_target
+        if target is None:
+            return self.args.prompts
+        if target == "screwdriver_handle":
+            templates = getattr(self, "pick_templates", None) or {}
+            variants = sorted(
+                name for name in templates
+                if name == target or name.endswith("_screwdriver_handle")
+            )
+            if variants:
+                return ",".join(variants)
+        return target
+
     def close(self) -> None:
         """Release all resources. Safe to call after partial startup."""
+        self.voice_stop.set()
+        self.voice_cancelled.set()
+        if self.voice_thread is not None:
+            self.voice_thread.join(timeout=5.0)
+            self.voice_thread = None
         if self.tablet_service is not None:
             self.tablet_service.close()
             self.tablet_service = None
@@ -427,7 +557,7 @@ class GraspDemoApp:
             self.sam_cache,
             self.sam_kwargs,
             frozen_bundle,
-            self.args.prompts,
+            self.sam_prompt_for_current_task(),
             meta_path,
             metadata,
             self.args,
@@ -512,6 +642,7 @@ class GraspDemoApp:
         """Send the latest target to IK and start recovery on grip failure."""
         if self.robot_actions is None:
             self.state.status = "Robot action service unavailable"
+            self.finish_voice_task()
             return
         if self.grasp_future is not None and not self.grasp_future.done():
             self.state.status = "Grasp action already running"
@@ -594,6 +725,7 @@ class GraspDemoApp:
             self.state.status = f"Grasp action failed: {exc}"
             print(f"[request_ik_tester] {self.state.status}", flush=True)
             self.grasp_future = None
+            self.finish_voice_task()
             return
         self.grasp_future = None
         self.finish_grasp_result(result)
@@ -606,6 +738,7 @@ class GraspDemoApp:
             self.state.grasp_confirmed_hand = None
             self.state.grasp_confirmed_label = None
             self.state.status = f"Paused by S; grasp result held: {result.status}"
+            self.finish_voice_task()
             return
 
         self.state.status = result.status
@@ -627,6 +760,8 @@ class GraspDemoApp:
                 self.state.grasp_confirmed_label = result.object_label
                 self.state.last_gripper_hand = result.grasp_hand
                 self.auto_put_after_confirmed_grasp()
+            else:
+                self.finish_voice_task()
 
     def auto_put_after_confirmed_grasp(self) -> None:
         """Run fixed put immediately when the gripper confirms a successful grasp."""
@@ -644,6 +779,7 @@ class GraspDemoApp:
 
         if self.robot_actions is None:
             self.state.status = "Robot action service unavailable"
+            self.finish_voice_task()
             return
 
         try:
@@ -655,6 +791,7 @@ class GraspDemoApp:
         except Exception as exc:  # noqa: BLE001
             self.state.status = f"Auto put failed: {exc}"
             print(f"[put] {self.state.status}", flush=True)
+            self.finish_voice_task()
             return
 
         self.state.status = result.status
@@ -665,7 +802,13 @@ class GraspDemoApp:
             self.state.grasp_confirmed = False
             self.state.grasp_confirmed_hand = None
             self.state.grasp_confirmed_label = None
-            self.restart_grasp_pipeline_after_put()
+            if self.state.voice_target is not None:
+                print(f"[voice] one-shot {self.state.voice_target} complete", flush=True)
+                self.finish_voice_task()
+            else:
+                self.restart_grasp_pipeline_after_put()
+        else:
+            self.finish_voice_task()
 
     def restart_grasp_pipeline_after_put(self) -> None:
         """Optionally repeat the same perception-and-grasp workflow as the A key."""
@@ -708,6 +851,7 @@ class GraspDemoApp:
         self.gripper_interrupted = self.gripper_future is not None
         if self.ik_publisher is None or self.robot_actions is None:
             s.status = "Drop recovery failed; robot publisher unavailable; remaining paused"
+            self.finish_voice_task()
             return
         generation = self.ik_publisher.request_stop()
         # Put has returned before this method is called. Drain any other old
@@ -766,6 +910,7 @@ class GraspDemoApp:
             if self.ik_publisher is not None:
                 self.ik_publisher.request_stop()
             s.status = "Drop recovery failed/cancelled; remaining paused: " + "; ".join(failed)
+            self.finish_voice_task()
             return
         s.paused = False
         s.home_needs_sync.discard(s.drop_recovery_hand)
@@ -778,7 +923,8 @@ class GraspDemoApp:
             return
         self.state.drop_regrasp_pending = False
         # This is the same capture -> SAM3 -> FlowPose -> grasp chain as KEY_CAPTURE.
-        self.start_pipeline(grasp_on_done=True)
+        if not self.start_pipeline(grasp_on_done=True):
+            self.finish_voice_task()
 
     def start_grip_failure_recovery(
         self,
@@ -796,12 +942,11 @@ class GraspDemoApp:
 
         s.retry_attempts += 1
         max_attempts = max(int(getattr(self.args, "grip_retry_max_attempts", 3)), 0)
-        # The shared continuous-grasp switch controls both successful-put
-        # continuation and failure-recovery continuation.  grip_retry_loop and
-        # its attempt limit remain the failure-specific safety controls.
-        retry_enabled = (
-            bool(getattr(self.args, "continuous_grasp_after_put", True))
-            and bool(getattr(self.args, "grip_retry_loop", True))
+        # Voice tasks may retry a failed grip even when regular continuous
+        # grasping is disabled; the retry switch and limit still apply.
+        retry_enabled = bool(getattr(self.args, "grip_retry_loop", True)) and (
+            s.voice_target is not None
+            or bool(getattr(self.args, "continuous_grasp_after_put", True))
         )
         s.retry_will_regrasp = retry_enabled and (
             max_attempts == 0 or s.retry_attempts <= max_attempts
@@ -811,6 +956,7 @@ class GraspDemoApp:
         s.last_gripper_hand = hand
         if self.robot_actions is None:
             s.status = "Robot action service unavailable"
+            self.finish_voice_task()
             return
 
         s.recovery_futures = [
@@ -881,6 +1027,7 @@ class GraspDemoApp:
             )
         else:
             s.status = "Recovery done; grip retry limit reached"
+            self.finish_voice_task()
 
         print(f"[grip_retry] {s.status}", flush=True)
 
@@ -910,6 +1057,7 @@ class GraspDemoApp:
             if s.sam_result is None:
                 s.retry_stage = RetryStage.IDLE
                 s.status = "Retry SAM3 failed; stopping automatic replan"
+                self.finish_voice_task()
                 return
 
             s.retry_stage = RetryStage.FLOWPOSE
@@ -923,6 +1071,7 @@ class GraspDemoApp:
             if not s.base_targets:
                 s.retry_stage = RetryStage.IDLE
                 s.status = "Retry FlowPose produced no target; stopping automatic replan"
+                self.finish_voice_task()
                 return
 
             s.retry_stage = RetryStage.IDLE
@@ -941,6 +1090,10 @@ class GraspDemoApp:
             or is_pending(s.flowpose_future)
             or s.retry_stage is not RetryStage.IDLE
             or bool(s.recovery_futures)
+            or is_pending(self.grasp_future)
+            or is_pending(self.gripper_future)
+            or is_pending(self.manual_home_future)
+            or bool(s.drop_recovery_futures)
         ):
             s.status = "Pipeline already running"
             return False
@@ -974,12 +1127,14 @@ class GraspDemoApp:
                 s.pipeline_stage = PipelineStage.IDLE
                 s.status = "Pipeline stopped: SAM3 produced no result"
                 s.pipeline_grasp_on_done = True
+                self.finish_voice_task()
                 return
 
             s.pipeline_stage = PipelineStage.FLOWPOSE
             self.submit_flowpose()
             if s.flowpose_future is None:
                 s.pipeline_stage = PipelineStage.IDLE
+                self.finish_voice_task()
             return
 
         if s.pipeline_stage is PipelineStage.FLOWPOSE:
@@ -989,6 +1144,7 @@ class GraspDemoApp:
             if not s.base_targets:
                 s.status = "Pipeline stopped: FlowPose produced no target"
                 s.pipeline_grasp_on_done = True
+                self.finish_voice_task()
                 return
 
             if s.pipeline_grasp_on_done:
@@ -1023,7 +1179,7 @@ class GraspDemoApp:
             self.state.sam_overlay,
             self.state.flowpose_overlay,
             status=self.state.status,
-            prompt=self.args.prompts,
+            prompt=self.sam_prompt_for_current_task(),
             sam_pending=int(is_pending(self.state.sam_future)),
             flowpose_pending=int(is_pending(self.state.flowpose_future)),
             put_enabled=bool(getattr(self.args, "enable_put_after_grasp", True)),
@@ -1076,10 +1232,14 @@ class GraspDemoApp:
             return False
 
         if key == KEY_PAUSE:
+            voice_cancelled = getattr(self, "voice_cancelled", None)
+            if voice_cancelled is not None:
+                voice_cancelled.set()
             if self.state.drop_recovery_futures:
                 self.state.drop_recovery_cancelled = True
                 self.state.drop_regrasp_pending = False
                 self.state.paused = True
+                self.finish_voice_task()
                 if self.ik_publisher is not None:
                     self.ik_publisher.request_stop()
                 self.state.status = "Paused by S: drop HOME cancellation requested"
@@ -1099,6 +1259,7 @@ class GraspDemoApp:
                 self.state.pipeline_stage = PipelineStage.IDLE
                 self.state.continuous_grasp_pending = False
                 self.reset_retry()
+                self.finish_voice_task()
                 self.gripper_interrupted = self.gripper_future is not None
                 self.state.grasp_confirmed = False
                 self.state.grasp_confirmed_hand = None
@@ -1129,6 +1290,8 @@ class GraspDemoApp:
                 else:
                     self.reset_retry(reset_attempts=True)
                     self.submit_sam3(fresh_bundle)
+        elif key == KEY_VOICE:
+            self.request_voice_command()
         elif key == KEY_PERCEPTION_PIPELINE:
             self.start_pipeline(grasp_on_done=False)
         elif key == KEY_FLOWPOSE and not self.auto_pipeline_on_a():
@@ -1171,6 +1334,8 @@ class GraspDemoApp:
                 self.start_pipeline(grasp_on_done=False)
             elif command is TabletCommand.GRASP:
                 self.start_pipeline(grasp_on_done=True)
+            elif command is TabletCommand.VOICE:
+                self.handle_key(KEY_VOICE, bundle)
             elif command is TabletCommand.HOME_LEFT:
                 self.handle_key(KEY_LEFT_HOME, bundle)
             elif command is TabletCommand.HOME_RIGHT:
@@ -1209,6 +1374,7 @@ class GraspDemoApp:
                 self.advance_drop_regrasp()
                 self.advance_continuous_grasp()
                 self.advance_replan_state(bundle)
+            self.handle_voice_commands()
             if self.tablet_bridge is not None:
                 # Publish the unannotated RealSense capture plus the latest
                 # perception overlays. The bridge converts BGR to browser RGB.
