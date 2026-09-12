@@ -49,6 +49,11 @@ from grasp_core.communication.request_ik_publisher import (  # noqa: E402
     build_ik_target_publisher,
 )
 from grasp_core.ui.request_ik_ui import make_dashboard  # noqa: E402
+from grasp_core.ui.tablet_ui import (  # noqa: E402
+    TabletCommand,
+    TabletTaskLoopBridge,
+    TabletWebService,
+)
 from grasp_core.core.robot_target_pose import (  # noqa: E402
     TargetObjectPose,
     load_camera_extrinsic_from_xacro,
@@ -183,6 +188,8 @@ class GraspDemoApp:
         self.ik_publisher = None
         self.gripper_receiver = None
         self.robot_actions: RobotActionService | None = None
+        self.tablet_bridge: TabletTaskLoopBridge | None = None
+        self.tablet_service: TabletWebService | None = None
 
         # SAM3 and FlowPose are sequential in this workflow, so one inference worker
         # is enough and avoids running two GPU-heavy models at the same time.
@@ -238,8 +245,20 @@ class GraspDemoApp:
         self.flowpose_cache["runner"] = FlowPoseRunner(**self.flowpose_kwargs)
         print("[startup] SAM3 and FlowPose runners ready", flush=True)
 
+        if bool(getattr(self.args, "tablet_ui", True)):
+            self.tablet_bridge = TabletTaskLoopBridge()
+            self.tablet_service = TabletWebService(
+                self.tablet_bridge,
+                host=str(getattr(self.args, "tablet_ui_host", "0.0.0.0")),
+                port=int(getattr(self.args, "tablet_ui_port", 7860)),
+            )
+            self.tablet_service.start()
+
     def close(self) -> None:
         """Release all resources. Safe to call after partial startup."""
+        if self.tablet_service is not None:
+            self.tablet_service.close()
+            self.tablet_service = None
         self.camera.close()
 
         if self.ik_publisher is not None:
@@ -1135,6 +1154,30 @@ class GraspDemoApp:
 
         return True
 
+    def handle_tablet_commands(self, bundle) -> None:
+        """Run queued browser commands inside the existing application loop."""
+        if self.tablet_bridge is None:
+            return
+
+        for command in self.tablet_bridge.drain_commands():
+            if command is TabletCommand.STOP:
+                if self.state.paused:
+                    self.state.status = "Already stopped / paused"
+                else:
+                    self.handle_key(KEY_PAUSE, bundle)
+            elif self.state.paused or is_pending(self.manual_home_future):
+                self.state.status = "Command ignored: robot is stopped / paused"
+            elif command is TabletCommand.PERCEIVE:
+                self.start_pipeline(grasp_on_done=False)
+            elif command is TabletCommand.GRASP:
+                self.start_pipeline(grasp_on_done=True)
+            elif command is TabletCommand.HOME_LEFT:
+                self.handle_key(KEY_LEFT_HOME, bundle)
+            elif command is TabletCommand.HOME_RIGHT:
+                self.handle_key(KEY_RIGHT_HOME, bundle)
+
+            self.tablet_bridge.set_activity(self.state.status)
+
     def run(self) -> int:
         """Run the real-time event loop until Q or ESC is pressed."""
         cv2.namedWindow(DASHBOARD_WINDOW, cv2.WINDOW_NORMAL)
@@ -1147,6 +1190,8 @@ class GraspDemoApp:
             if bundle is None:
                 print("[camera] failed to read frame; retrying...", flush=True)
                 continue
+
+            self.handle_tablet_commands(bundle)
 
             if self.state.paused:
                 if not self.state.status.startswith("Paused by S"):
@@ -1164,6 +1209,15 @@ class GraspDemoApp:
                 self.advance_drop_regrasp()
                 self.advance_continuous_grasp()
                 self.advance_replan_state(bundle)
+            if self.tablet_bridge is not None:
+                # Publish the unannotated RealSense capture plus the latest
+                # perception overlays. The bridge converts BGR to browser RGB.
+                self.tablet_bridge.publish(
+                    bundle.color_image,
+                    self.state.status,
+                    sam_bgr=self.state.sam_overlay,
+                    flowpose_bgr=self.state.flowpose_overlay,
+                )
             self.render(bundle)
 
             if not self.handle_key(cv2.waitKey(1), bundle):

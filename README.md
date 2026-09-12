@@ -38,6 +38,31 @@ flowpose_request_ik_tester.py
 
 每个通用能力只保留一个入口，其他模块只能调用，不再复制实现。
 
+## 平板控制台
+
+运行主入口后会同时启动浅蓝色平板 Web 控制台，服务默认监听
+`0.0.0.0:7860`。平板和机器人处于同一局域网时，访问：
+
+```text
+http://机器人IP:7860/
+```
+
+例如机器人 IP 为 `192.168.10.123` 时，地址为
+`http://192.168.10.123:7860/`。页面持续显示 RealSense 原始彩色画面，
+“识别与定位”复用热键 Z 的 SAM3 + FlowPose 流程，“识别并执行抓取”复用
+热键 A 的 SAM3 + FlowPose + 机械臂执行流程；Home 和停止也沿用主循环现有接口。
+
+可用 TRUE/FALSE 参数控制是否启动平板服务，并可覆盖监听地址和端口：
+
+```bash
+python flowpose_request_ik_tester.py --tablet-ui TRUE
+python flowpose_request_ik_tester.py --tablet-ui FALSE
+python flowpose_request_ik_tester.py --tablet-ui TRUE --tablet-ui-port 7861
+```
+
+页面刷新间隔默认 0.25 秒，可通过环境变量
+`TASK_LOOP_UI_REFRESH_SEC` 调整。
+
 ## 夹爪部分
 
 - `daimon_stuff/dm_gripper_cam_py/` 腕部相机相关功能包

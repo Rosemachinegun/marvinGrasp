@@ -1,0 +1,172 @@
+import os
+import gradio as gr
+
+
+def create_tablet_interface(
+    capture_and_perceive,
+    start_task,
+    home_robot,
+    stop_task,
+    get_latest_image,
+):
+    """
+    平板交互层。
+
+    后端只需要提供以下接口：
+
+    capture_and_perceive(suppress_contained: bool)
+        -> image
+
+    start_task()
+        -> (log_text, status_text)
+
+    home_robot()
+        -> (log_text, status_text)
+
+    stop_task()
+        -> (log_text, status_text)
+
+    get_latest_image()
+        -> image / gr.update()
+    """
+
+    with gr.Blocks(title="Robot Grasp Control") as demo:
+
+        gr.Markdown(
+            """
+            # Robot Grasp Control
+
+            视觉识别 → 目标定位 → 自动抓取
+            """
+        )
+
+        # =============================
+        # 视觉区域
+        # =============================
+
+        with gr.Row():
+
+            with gr.Column(scale=1):
+
+                suppress_contained_input = gr.Checkbox(
+                    label="过滤被大目标覆盖的小目标",
+                    value=True,
+                )
+
+                perception_btn = gr.Button(
+                    "📷 识别目标",
+                    variant="primary",
+                    size="lg",
+                )
+
+            with gr.Column(scale=3):
+
+                perception_output = gr.Image(
+                    label="机器人视觉",
+                    type="numpy",
+                    interactive=False,
+                )
+
+        # =============================
+        # 任务状态
+        # =============================
+
+        gr.Markdown("---")
+
+        gr.Markdown("## 机器人状态")
+
+        current_task_display = gr.Textbox(
+            label="当前任务",
+            value="机器人待机",
+            interactive=False,
+            lines=5,
+        )
+
+        action_log = gr.Textbox(
+            label="运行信息",
+            interactive=False,
+            lines=5,
+        )
+
+        # =============================
+        # 控制区域
+        # =============================
+
+        with gr.Row():
+
+            start_btn = gr.Button(
+                "▶ 开始抓取",
+                variant="primary",
+                size="lg",
+            )
+
+            home_btn = gr.Button(
+                "🏠 回到 Home",
+                variant="secondary",
+                size="lg",
+            )
+
+            stop_btn = gr.Button(
+                "■ 停止",
+                variant="stop",
+                size="lg",
+            )
+
+        # =============================
+        # 图像刷新
+        # =============================
+
+        image_timer = gr.Timer(
+            value=float(
+                os.getenv(
+                    "TASK_LOOP_UI_REFRESH_SEC",
+                    "0.5",
+                )
+            ),
+            active=True,
+        )
+
+        # =============================
+        # 事件绑定
+        # =============================
+
+        perception_btn.click(
+            fn=capture_and_perceive,
+            inputs=[suppress_contained_input],
+            outputs=[perception_output],
+        )
+
+        image_timer.tick(
+            fn=get_latest_image,
+            inputs=[],
+            outputs=[perception_output],
+        )
+
+        start_btn.click(
+            fn=start_task,
+            inputs=[],
+            outputs=[
+                action_log,
+                current_task_display,
+            ],
+        )
+
+        home_btn.click(
+            fn=home_robot,
+            inputs=[],
+            outputs=[
+                action_log,
+                current_task_display,
+            ],
+        )
+
+        stop_btn.click(
+            fn=stop_task,
+            inputs=[],
+            outputs=[
+                action_log,
+                current_task_display,
+            ],
+        )
+
+    return demo

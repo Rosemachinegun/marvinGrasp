@@ -753,6 +753,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument(
+        "--tablet-ui",
+        type=parse_bool,
+        default=True,
+        metavar="TRUE/FALSE",
+        help="Start the tablet web UI together with the demo.",
+    )
+    parser.add_argument(
+        "--tablet-ui-host",
+        default="0.0.0.0",
+        help="Tablet web service listen address.",
+    )
+    parser.add_argument(
+        "--tablet-ui-port",
+        type=int,
+        default=7860,
+        help="Tablet web service port.",
+    )
     parser.add_argument("--prompts", default="toy,yellow_screwdriver_handle,pen,rectangular object,ribbon")
     parser.add_argument("--sam3-checkpoint-path", default="/model/sam3.pt")
     parser.add_argument("--sam3-root", default=None)

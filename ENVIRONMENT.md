@@ -104,7 +104,7 @@ python flowpose_request_ik_tester.py \
 conda activate graspdemo
 source /opt/ros/humble/setup.bash
 
-python -c "import cv2, grpc, numpy, pyrealsense2, torch, yaml; print(torch.__version__, torch.cuda.is_available())"
+python -c "import cv2, gradio, grpc, numpy, pyrealsense2, torch, yaml; print(torch.__version__, torch.cuda.is_available())"
 python -c "import rclpy; from geometry_msgs.msg import PoseStamped; print('ROS 2 OK')"
 python -c "import pointnet2_cuda; print('PointNet2 CUDA OK')"
 python flowpose_request_ik_tester.py --help
