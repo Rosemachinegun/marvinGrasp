@@ -19,9 +19,9 @@ from typing import Any
 import cv2
 import numpy as np
 
-from grasp_core.core.pose_math import select_ik_hand
-from grasp_core.core.long_object_axes import canonical_long_object_pose, is_long_object
-from grasp_core.core.robot_target_pose import make_target_object_pose
+from grasp_core.core.math.pose import select_ik_hand
+from grasp_core.core.math.object_axes import canonical_long_object_pose, is_long_object
+from grasp_core.core.types.robot_target_pose import make_target_object_pose
 from grasp_core.perception.realsense_sam3 import (
     DEFAULT_BBOX_CONTAINMENT_THRESHOLD,
     DEFAULT_CONTAINMENT_MIN_AREA_RATIO,
@@ -38,20 +38,20 @@ from grasp_core.perception.realsense_sam3 import (
     resolve_checkpoint_path,
     save_inference_result,
 )
-from grasp_core.tasks.cube_z_symmetry_grasp_policy import (
+from grasp_core.planning.grasp.policies.cube_z_symmetry import (
     apply_cube_z_symmetry_grasp_policy,
     local_minus_x_base,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-FLOWPOSE_ROOT = PROJECT_ROOT / "FlowPose"
+FLOWPOSE_ROOT = PROJECT_ROOT / "perception" / "flowpose"
 FLOWPOSE_PY_RUNNER_DIR = FLOWPOSE_ROOT / "py_runners"
-DEFAULT_FLOW_MODEL_PATH = PROJECT_ROOT / "model" / "FlowNet3.pth"
-DEFAULT_SCALE_MODEL_PATH = PROJECT_ROOT / "model" / "ScaleNet3.pth"
+DEFAULT_FLOW_MODEL_PATH = PROJECT_ROOT / "perception" / "models" / "FlowNet3.pth"
+DEFAULT_SCALE_MODEL_PATH = PROJECT_ROOT / "perception" / "models" / "ScaleNet3.pth"
 DEFAULT_CAPTURE_DIR = PROJECT_ROOT / "captures" / "flowpose_realsense"
 DEFAULT_DINO_REPO_CANDIDATES = [
-    PROJECT_ROOT / "model" / "facebookresearch_dinov2_main",
+    PROJECT_ROOT / "perception" / "models" / "facebookresearch_dinov2_main",
     Path(
         "/home/kewei/anygrasp/auto_app-main/FlowPoseDocker/model/facebookresearch_dinov2_main"
     ),
@@ -59,7 +59,7 @@ DEFAULT_DINO_REPO_CANDIDATES = [
     Path("/home/kewei/.cache/torch/hub/facebookresearch_dinov2_main"),
 ]
 DEFAULT_DINO_CKPT_CANDIDATES = [
-    PROJECT_ROOT / "model" / "dinov2_vits14_pretrain.pth",
+    PROJECT_ROOT / "perception" / "models" / "dinov2_vits14_pretrain.pth",
     Path(
         "/home/kewei/anygrasp/auto_app-main/FlowPoseDocker/model/dinov2_vits14_pretrain.pth"
     ),

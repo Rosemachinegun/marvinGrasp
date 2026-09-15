@@ -1,20 +1,39 @@
 #!/usr/bin/env python3
-"""配置层：集中管理命令行参数、默认值和 tool.yaml 默认抓取配置。"""
+"""配置层：集中管理运行参数和 grasp_core/resources/tool.yaml 默认配置。"""
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 import argparse
 from dataclasses import dataclass
 
 import numpy as np
-import yaml
+from grasp_core.config.parsing import (
+    parse_bool,
+)
+from grasp_core.config.resource_paths import (
+    DEFAULT_ROBOT_XACRO_PATH,
+    DEFAULT_SAM3_ROI_XYXY,
+    DEFAULT_TOOL_TEMPLATE_PATH,
+    PROJECT_ROOT,
+)
+from grasp_core.execution.config import (
+    DEFAULT_JOINT_TRAJECTORY_CSV_DIR,
+    DEFAULT_TARGET_PUBLISH_RATE_HZ,
+    DEFAULT_TARGET_TRAJECTORY_ANGULAR_SPEED_DPS,
+    DEFAULT_TARGET_TRAJECTORY_MIN_STEPS,
+    DEFAULT_TARGET_TRAJECTORY_SPEED_MPS,
+    DEFAULT_TARGET_TRAJECTORY_STEP_DEG,
+    DEFAULT_TARGET_TRAJECTORY_STEP_M,
+    MOTION_CONFIG,
+)
+from grasp_core.config.gripper_config import (
+    GripSignalDefaults,
+    GripperDefaults,
+    GRIP_SIGNAL_DEFAULTS,
+    GRIPPER_DEFAULTS,
+)
 
 from grasp_core.perception.flowpose_pipeline import (
     DEFAULT_BBOX_CONTAINMENT_THRESHOLD,
@@ -38,556 +57,8 @@ def _format_xyz(values: np.ndarray) -> str:
 def clamp(value: int | float, low: int | float, high: int | float):
     return max(low, min(high, value))
 
-DEFAULT_ROBOT_XACRO_PATH = PROJECT_ROOT / "config" / "stand_v3.urf.xacro"
 
-
-DEFAULT_TOOL_TEMPLATE_PATH = PROJECT_ROOT / "config" / "tool.yaml"
-DEFAULT_SAM3_ROI_XYXY = (202, 40, 543, 328)
-
-@dataclass(frozen=True)
-class GripSignalDefaults:
-    host: str = "127.0.0.1"
-    port: int = 55660
-    timeout_sec: float = 0.5
-    command_timeout_sec: float = 5.0
-    receiver_path: Path = PROJECT_ROOT / "daimon_stuff" / "grip_signal_receiver.py"
-    settle_sec: float = 0.0
-    post_confirm_hold_sec: float = 0.0
-    lift_hold_sec: float = 0.0
-    retry_max_attempts: int = 1
-    drop_close_delta: int = 30
-    drop_poll_interval: float = 0.05
-
-
-@dataclass(frozen=True)
-class GripperDefaults:
-    left_server: str = "192.168.14.11:55551"
-    right_server: str = "192.168.10.11:55551"
-    dual: bool = True
-    left_clamp_pos: int = -52525
-    right_clamp_pos: int = -52525
-    left_open_pos: int = -142525
-    right_open_pos: int = -142525
-    left_max_itinerary: int = 90000
-    right_max_itinerary: int = 90000
-    left_speed_coe: int = 3600
-    right_speed_coe: int = 3600
-    calibration_tolerance: int = 150
-    connect_attempts: int = 3
-    connect_timeout_sec: float = 2.0
-    connect_retry_delay_sec: float = 0.2
-    allow_homing_fallback: bool = False
-    left_min_pos: int = 100
-    right_min_pos: int = 100
-    left_max_pos: int = 1000
-    right_max_pos: int = 1000
-    # Close briskly, then switch to the lower hold torque as soon as contact is
-    # confirmed.  This shortens the only blocking section between the lowest
-    # pick waypoint and the lift motion without lifting on an unconfirmed grip.
-    left_grip_speed: int = 80
-    right_grip_speed: int = 80
-    left_grip_torque: int = 40
-    right_grip_torque: int = 40
-    left_hold_torque: int = 20
-    right_hold_torque: int = 20
-    left_current_threshold: int = 120
-    right_current_threshold: int = 120
-    left_poll_interval: float = 0.02
-    right_poll_interval: float = 0.02
-    left_contact_grace: float = 0.1
-    right_contact_grace: float = 0.1
-    left_progress_epsilon: int = 2
-    right_progress_epsilon: int = 2
-    left_stall_samples: int = 3
-    right_stall_samples: int = 3
-    left_empty_grip_margin: int = 50
-    right_empty_grip_margin: int = 50
-    left_target_pos_tolerance: int = 120
-    right_target_pos_tolerance: int = 120
-    left_timeout: float = 5.0
-    right_timeout: float = 5.0
-    left_grip_done_wait: float = 0.05
-    right_grip_done_wait: float = 0.05
-    left_release_target: int = 1000
-    right_release_target: int = 1000
-    left_release_speed: int = 60
-    right_release_speed: int = 60
-    left_release_torque: int = 20
-    right_release_torque: int = 20
-    left_release_wait: float = 0.05
-    right_release_wait: float = 0.05
-
-    @property
-    def server(self) -> str:
-        return self.right_server
-
-    @property
-    def clamp_pos(self) -> int:
-        return self.right_clamp_pos
-
-    @property
-    def open_pos(self) -> int:
-        return self.right_open_pos
-
-    @property
-    def max_itinerary(self) -> int:
-        return self.right_max_itinerary
-
-    @property
-    def speed_coe(self) -> int:
-        return self.right_speed_coe
-
-    @property
-    def min_pos(self) -> int:
-        return self.right_min_pos
-
-    @property
-    def max_pos(self) -> int:
-        return self.right_max_pos
-
-    @property
-    def grip_speed(self) -> int:
-        return self.right_grip_speed
-
-    @property
-    def grip_torque(self) -> int:
-        return self.right_grip_torque
-
-    @property
-    def hold_torque(self) -> int:
-        return self.right_hold_torque
-
-    @property
-    def current_threshold(self) -> int:
-        return self.right_current_threshold
-
-    @property
-    def poll_interval(self) -> float:
-        return self.right_poll_interval
-
-    @property
-    def contact_grace(self) -> float:
-        return self.right_contact_grace
-
-    @property
-    def progress_epsilon(self) -> int:
-        return self.right_progress_epsilon
-
-    @property
-    def stall_samples(self) -> int:
-        return self.right_stall_samples
-
-    @property
-    def empty_grip_margin(self) -> int:
-        return self.right_empty_grip_margin
-
-    @property
-    def target_pos_tolerance(self) -> int:
-        return self.right_target_pos_tolerance
-
-    @property
-    def timeout(self) -> float:
-        return self.right_timeout
-
-    @property
-    def grip_done_wait(self) -> float:
-        return self.right_grip_done_wait
-
-    @property
-    def release_target(self) -> int:
-        return self.right_release_target
-
-    @property
-    def release_speed(self) -> int:
-        return self.right_release_speed
-
-    @property
-    def release_torque(self) -> int:
-        return self.right_release_torque
-
-    @property
-    def release_wait(self) -> float:
-        return self.right_release_wait
-
-
-@dataclass(frozen=True)
-class HomeDefaults:
-    right_xyz: tuple[float, float, float] = (0.25, -0.25, 0.81)
-    left_xyz: tuple[float, float, float] = (0.25, 0.25, 0.81)
-    safe_z_m: float = 0.95
-    side_clearance_y_m: float = 0.28
-    tilt_z_left_deg: float = 0.0
-    tilt_z_right_deg: float = 0.0
-    tilt_y_left_deg: float = 0.0
-    tilt_y_right_deg: float = 0.0
-
-
-@dataclass(frozen=True)
-class PutDefaults:
-    target_hold_sec: float = 0.0
-    home_hold_sec: float = 0.05
-    keep_put_pose: bool = True
-    tilt_z_left_deg: float = 0.0
-    tilt_z_right_deg: float = 0.0
-    tilt_y_left_deg: float = 0.0
-    tilt_y_right_deg: float = 0.0
-
-
-@dataclass(frozen=True)
-class SideApproachDefaults:
-    enabled: bool = False
-    offset_y_m: float = 0.0   #what the
-    min_abs_y_m: float = 0.035
-    lift_m: float = 0.06
-    wrist_outward_bias_deg: float = 8.0
-    max_wrist_deviation_deg: float = 25.0
-
-
-@dataclass(frozen=True)
-class TargetTrajectoryDefaults:
-    publish_rate_hz: float = 80.0
-    step_m: float = 0.005
-    step_deg: float = 1.0
-    min_steps: int = 15
-    speed_mps: float = 0.15
-    angular_speed_dps: float = 35.0
-    plot_dir: Path = PROJECT_ROOT / "captures" / "request_ik_trajectories"
-
-
-GRIP_SIGNAL_DEFAULTS = GripSignalDefaults()
-GRIPPER_DEFAULTS = GripperDefaults()
-HOME_DEFAULTS = HomeDefaults()
-PUT_DEFAULTS = PutDefaults()
-SIDE_APPROACH_DEFAULTS = SideApproachDefaults()
-TARGET_TRAJECTORY_DEFAULTS = TargetTrajectoryDefaults()
-
-# Compatibility exports used by other modules.
 DEFAULT_GRIP_SETTLE_SEC = GRIP_SIGNAL_DEFAULTS.settle_sec
-DEFAULT_TARGET_PUBLISH_RATE_HZ = TARGET_TRAJECTORY_DEFAULTS.publish_rate_hz
-DEFAULT_TARGET_TRAJECTORY_STEP_M = TARGET_TRAJECTORY_DEFAULTS.step_m
-DEFAULT_TARGET_TRAJECTORY_STEP_DEG = TARGET_TRAJECTORY_DEFAULTS.step_deg
-DEFAULT_TARGET_TRAJECTORY_MIN_STEPS = TARGET_TRAJECTORY_DEFAULTS.min_steps
-DEFAULT_TARGET_TRAJECTORY_SPEED_MPS = TARGET_TRAJECTORY_DEFAULTS.speed_mps
-DEFAULT_TARGET_TRAJECTORY_ANGULAR_SPEED_DPS = (
-    TARGET_TRAJECTORY_DEFAULTS.angular_speed_dps
-)
-DEFAULT_TRAJECTORY_PLOT_DIR = TARGET_TRAJECTORY_DEFAULTS.plot_dir
-DEFAULT_JOINT_TRAJECTORY_CSV_DIR = (
-    PROJECT_ROOT / "captures" / "request_ik_joint_trajectories"
-)
-
-
-@dataclass(frozen=True)
-class GraspConfig:
-    force_object_z: bool = True
-    forced_object_z_m: float = 0.685
-    pregrasp_distance_m: float = 0.05
-    lift_distance_m: float = 0.08
-    approach_axis: str = "z"
-    approach_sign: float = -1.0
-    use_flowpose_grasp_rotation: bool = False
-    use_cube_z_symmetry_grasp_policy: bool = False
-    ik_grasp_tcp_offset_m: tuple[float, float, float] = (-0.06, 0.0, -0.02)
-    ik_pregrasp_extra_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    ik_orientation_quat: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
-    ik_downward_tilt_deg: float = 45.0
-    ik_downward_tilt_left_deg: float | None = None
-    ik_downward_tilt_right_deg: float | None = None
-    ik_downward_tilt_axis: str = "y"
-    ik_downward_tilt_y_deg: float = 0.0
-    ik_downward_tilt_y_left_deg: float | None = None
-    ik_downward_tilt_y_right_deg: float | None = None
-    ik_downward_tilt_frame: str = "local"
-    visualize_grasp_path: bool = True
-    save_joint_trajectory_csv: bool = False
-    show_raw_flowpose_window: bool = True
-
-
-DEFAULT_GRASP_CONFIG = GraspConfig()
-
-def parse_bool(value: str | bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if text in {"1", "true", "t", "yes", "y", "on"}:
-        return True
-    if text in {"0", "false", "f", "no", "n", "off"}:
-        return False
-    raise argparse.ArgumentTypeError(f"expected TRUE/FALSE, got {value!r}")
-
-
-def parse_optional_bool(value: str | bool | None) -> bool | None:
-    if value is None:
-        return None
-    return parse_bool(value)
-
-
-def load_tool_yaml(path: Path) -> dict:
-    with path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle) or {}
-    return raw if isinstance(raw, dict) else {}
-
-
-def parse_float_tuple(
-    value: object,
-    *,
-    expected_len: int,
-    fallback: tuple[float, ...],
-    name: str,
-) -> tuple[float, ...]:
-    try:
-        values = tuple(float(item) for item in value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        print(f"[grasp_config] invalid {name}={value!r}; using {fallback}", flush=True)
-        return fallback
-    if len(values) != expected_len or not all(np.isfinite(values)):
-        print(f"[grasp_config] invalid {name}={value!r}; using {fallback}", flush=True)
-        return fallback
-    return values
-
-
-def parse_config_bool(value: object, *, fallback: bool, name: str) -> bool:
-    try:
-        return parse_bool(value)  # type: ignore[arg-type]
-    except argparse.ArgumentTypeError:
-        print(f"[grasp_config] invalid {name}={value!r}; using {fallback}", flush=True)
-        return fallback
-
-
-def parse_config_float(value: object, *, fallback: float, name: str) -> float:
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        print(f"[grasp_config] invalid {name}={value!r}; using {fallback}", flush=True)
-        return fallback
-    if not np.isfinite(result):
-        print(f"[grasp_config] invalid {name}={value!r}; using {fallback}", flush=True)
-        return fallback
-    return result
-
-
-def tool_grasp_defaults_from_yaml(path: Path) -> GraspConfig:
-    try:
-        raw = load_tool_yaml(path)
-    except OSError as exc:
-        print(
-            f"[grasp_config] unable to read {path}: {exc}; using built-in defaults",
-            flush=True,
-        )
-        return DEFAULT_GRASP_CONFIG
-    except yaml.YAMLError as exc:
-        print(
-            f"[grasp_config] invalid YAML {path}: {exc}; using built-in defaults",
-            flush=True,
-        )
-        return DEFAULT_GRASP_CONFIG
-
-    defaults = raw.get("defaults")
-    if not isinstance(defaults, dict):
-        return DEFAULT_GRASP_CONFIG
-
-    cfg = DEFAULT_GRASP_CONFIG
-    axis = str(defaults.get("ik_downward_tilt_axis", cfg.ik_downward_tilt_axis)).lower()
-    if axis not in {"x", "y", "z"}:
-        print(
-            f"[grasp_config] invalid ik_downward_tilt_axis={axis!r}; using {cfg.ik_downward_tilt_axis!r}",
-            flush=True,
-        )
-        axis = cfg.ik_downward_tilt_axis
-    frame = str(
-        defaults.get("ik_downward_tilt_frame", cfg.ik_downward_tilt_frame)
-    ).lower()
-    if frame not in {"local", "base"}:
-        print(
-            f"[grasp_config] invalid ik_downward_tilt_frame={frame!r}; using {cfg.ik_downward_tilt_frame!r}",
-            flush=True,
-        )
-        frame = cfg.ik_downward_tilt_frame
-    approach_axis = str(defaults.get("approach_axis", cfg.approach_axis)).lower()
-    if approach_axis not in {"x", "y", "z"}:
-        print(
-            f"[grasp_config] invalid approach_axis={approach_axis!r}; using {cfg.approach_axis!r}",
-            flush=True,
-        )
-        approach_axis = cfg.approach_axis
-
-    return GraspConfig(
-        force_object_z=parse_config_bool(
-            defaults.get("force_object_z", cfg.force_object_z),
-            fallback=cfg.force_object_z,
-            name="force_object_z",
-        ),
-        forced_object_z_m=parse_config_float(
-            defaults.get("forced_object_z_m", cfg.forced_object_z_m),
-            fallback=cfg.forced_object_z_m,
-            name="forced_object_z_m",
-        ),
-        pregrasp_distance_m=parse_config_float(
-            defaults.get("pregrasp_distance_m", cfg.pregrasp_distance_m),
-            fallback=cfg.pregrasp_distance_m,
-            name="pregrasp_distance_m",
-        ),
-        lift_distance_m=parse_config_float(
-            defaults.get("lift_distance_m", cfg.lift_distance_m),
-            fallback=cfg.lift_distance_m,
-            name="lift_distance_m",
-        ),
-        approach_axis=approach_axis,
-        approach_sign=parse_config_float(
-            defaults.get("approach_sign", cfg.approach_sign),
-            fallback=cfg.approach_sign,
-            name="approach_sign",
-        ),
-        use_flowpose_grasp_rotation=parse_config_bool(
-            defaults.get(
-                "use_flowpose_grasp_rotation",
-                cfg.use_flowpose_grasp_rotation,
-            ),
-            fallback=cfg.use_flowpose_grasp_rotation,
-            name="use_flowpose_grasp_rotation",
-        ),
-        use_cube_z_symmetry_grasp_policy=parse_config_bool(
-            defaults.get(
-                "use_cube_z_symmetry_grasp_policy",
-                cfg.use_cube_z_symmetry_grasp_policy,
-            ),
-            fallback=cfg.use_cube_z_symmetry_grasp_policy,
-            name="use_cube_z_symmetry_grasp_policy",
-        ),
-        ik_grasp_tcp_offset_m=parse_float_tuple(
-            defaults.get("ik_grasp_tcp_offset_m", cfg.ik_grasp_tcp_offset_m),
-            expected_len=3,
-            fallback=cfg.ik_grasp_tcp_offset_m,
-            name="ik_grasp_tcp_offset_m",
-        ),  # type: ignore[arg-type]
-        ik_pregrasp_extra_offset_m=parse_float_tuple(
-            defaults.get(
-                "ik_pregrasp_extra_offset_m",
-                cfg.ik_pregrasp_extra_offset_m,
-            ),
-            expected_len=3,
-            fallback=cfg.ik_pregrasp_extra_offset_m,
-            name="ik_pregrasp_extra_offset_m",
-        ),  # type: ignore[arg-type]
-        ik_orientation_quat=parse_float_tuple(
-            defaults.get("ik_orientation_quat", cfg.ik_orientation_quat),
-            expected_len=4,
-            fallback=cfg.ik_orientation_quat,
-            name="ik_orientation_quat",
-        ),  # type: ignore[arg-type]
-        ik_downward_tilt_deg=parse_config_float(
-            defaults.get("ik_downward_tilt_deg", cfg.ik_downward_tilt_deg),
-            fallback=cfg.ik_downward_tilt_deg,
-            name="ik_downward_tilt_deg",
-        ),
-        ik_downward_tilt_left_deg=(
-            None
-            if defaults.get("ik_downward_tilt_left_deg") is None
-            else parse_config_float(
-                defaults.get("ik_downward_tilt_left_deg"),
-                fallback=cfg.ik_downward_tilt_deg,
-                name="ik_downward_tilt_left_deg",
-            )
-        ),
-        ik_downward_tilt_right_deg=(
-            None
-            if defaults.get("ik_downward_tilt_right_deg") is None
-            else parse_config_float(
-                defaults.get("ik_downward_tilt_right_deg"),
-                fallback=cfg.ik_downward_tilt_deg,
-                name="ik_downward_tilt_right_deg",
-            )
-        ),
-        ik_downward_tilt_axis=axis,
-        ik_downward_tilt_y_deg=parse_config_float(
-            defaults.get("ik_downward_tilt_y_deg", cfg.ik_downward_tilt_y_deg),
-            fallback=cfg.ik_downward_tilt_y_deg,
-            name="ik_downward_tilt_y_deg",
-        ),
-        ik_downward_tilt_y_left_deg=(
-            None
-            if defaults.get("ik_downward_tilt_y_left_deg") is None
-            else parse_config_float(
-                defaults.get("ik_downward_tilt_y_left_deg"),
-                fallback=cfg.ik_downward_tilt_y_deg,
-                name="ik_downward_tilt_y_left_deg",
-            )
-        ),
-        ik_downward_tilt_y_right_deg=(
-            None
-            if defaults.get("ik_downward_tilt_y_right_deg") is None
-            else parse_config_float(
-                defaults.get("ik_downward_tilt_y_right_deg"),
-                fallback=cfg.ik_downward_tilt_y_deg,
-                name="ik_downward_tilt_y_right_deg",
-            )
-        ),
-        ik_downward_tilt_frame=frame,
-        visualize_grasp_path=parse_config_bool(
-            defaults.get("visualize_grasp_path", cfg.visualize_grasp_path),
-            fallback=cfg.visualize_grasp_path,
-            name="visualize_grasp_path",
-        ),
-        save_joint_trajectory_csv=parse_config_bool(
-            defaults.get(
-                "save_joint_trajectory_csv",
-                cfg.save_joint_trajectory_csv,
-            ),
-            fallback=cfg.save_joint_trajectory_csv,
-            name="save_joint_trajectory_csv",
-        ),
-        show_raw_flowpose_window=parse_config_bool(
-            defaults.get(
-                "show_raw_flowpose_window",
-                cfg.show_raw_flowpose_window,
-            ),
-            fallback=cfg.show_raw_flowpose_window,
-            name="show_raw_flowpose_window",
-        ),
-    )
-
-
-def apply_grasp_config_defaults(args: argparse.Namespace) -> argparse.Namespace:
-    cli_tilt_override = getattr(args, "ik_downward_tilt_deg", None) is not None
-    cli_tilt_y_override = getattr(args, "ik_downward_tilt_y_deg", None) is not None
-    config = tool_grasp_defaults_from_yaml(Path(args.tool_template_path).expanduser())
-    for field_name, config_value in config.__dict__.items():
-        if getattr(args, field_name, None) is None:
-            setattr(args, field_name, config_value)
-    if cli_tilt_override:
-        args.ik_downward_tilt_left_deg = None
-        args.ik_downward_tilt_right_deg = None
-    if cli_tilt_y_override:
-        args.ik_downward_tilt_y_left_deg = None
-        args.ik_downward_tilt_y_right_deg = None
-    if getattr(args, "target_trajectory_plot", None) is not None:
-        args.visualize_grasp_path = bool(args.target_trajectory_plot)
-    args.target_trajectory_plot = bool(args.visualize_grasp_path)
-    print(
-        "[grasp_config] defaults "
-        f"source={args.tool_template_path} "
-        f"force_z={bool(args.force_object_z)} "
-        f"object_z={float(args.forced_object_z_m):.4f}m "
-        f"pregrasp={float(args.pregrasp_distance_m):.3f}m "
-        f"tcp_offset={_format_xyz(np.asarray(args.ik_grasp_tcp_offset_m, dtype=np.float64))} "
-        f"flowpose_rotation={bool(args.use_flowpose_grasp_rotation)} "
-        f"cube_z_symmetry_policy={bool(args.use_cube_z_symmetry_grasp_policy)} "
-        f"tilt={float(args.ik_downward_tilt_deg):.2f}deg/"
-        f"left={getattr(args, 'ik_downward_tilt_left_deg', None)} "
-        f"right={getattr(args, 'ik_downward_tilt_right_deg', None)} "
-        f"{args.ik_downward_tilt_axis}+y={float(args.ik_downward_tilt_y_deg):.2f}deg/"
-        f"y_left={getattr(args, 'ik_downward_tilt_y_left_deg', None)} "
-        f"y_right={getattr(args, 'ik_downward_tilt_y_right_deg', None)} "
-        f"{args.ik_downward_tilt_frame} "
-        f"side_approach_policy=disabled "
-        f"visualize_grasp_path={bool(args.visualize_grasp_path)} "
-        f"show_raw_flowpose_window={bool(args.show_raw_flowpose_window)} "
-        f"save_joint_trajectory_csv={bool(args.save_joint_trajectory_csv)}",
-        flush=True,
-    )
-    return normalize_gripper_args(args)
-
-
 def normalize_gripper_args(args: argparse.Namespace) -> argparse.Namespace:
     args.left_gripper_clamp_pos = int(args.left_gripper_clamp_pos)
     args.left_gripper_open_pos = int(args.left_gripper_open_pos)
@@ -610,7 +81,7 @@ def normalize_gripper_args(args: argparse.Namespace) -> argparse.Namespace:
     args.left_gripper_current_threshold = max(
         int(args.left_gripper_current_threshold), 0
     )
-    args.left_gripper_poll_interval = max(float(args.left_gripper_poll_interval), 0.02)
+    args.left_gripper_poll_interval = max(float(args.left_gripper_poll_interval), 0.01)
     args.left_gripper_contact_grace = max(float(args.left_gripper_contact_grace), 0.0)
     args.left_gripper_progress_epsilon = max(
         int(args.left_gripper_progress_epsilon), 0
@@ -636,7 +107,7 @@ def normalize_gripper_args(args: argparse.Namespace) -> argparse.Namespace:
     args.gripper_grip_torque = int(clamp(args.gripper_grip_torque, 10, 100))
     args.gripper_hold_torque = int(clamp(args.gripper_hold_torque, 10, 100))
     args.gripper_release_torque = int(clamp(args.gripper_release_torque, 10, 100))
-    args.gripper_poll_interval = max(float(args.gripper_poll_interval), 0.02)
+    args.gripper_poll_interval = max(float(args.gripper_poll_interval), 0.01)
     args.gripper_contact_grace = max(float(args.gripper_contact_grace), 0.0)
     args.gripper_progress_epsilon = max(int(args.gripper_progress_epsilon), 0)
     args.gripper_stall_samples = max(int(args.gripper_stall_samples), 1)
@@ -655,32 +126,6 @@ def normalize_gripper_args(args: argparse.Namespace) -> argparse.Namespace:
     args.grip_lift_hold_sec = max(float(args.grip_lift_hold_sec), 0.0)
     args.grip_drop_close_delta = max(int(args.grip_drop_close_delta), 0)
     args.grip_drop_poll_interval = max(float(args.grip_drop_poll_interval), 0.02)
-    args.put_target_hold_sec = max(float(args.put_target_hold_sec), 0.0)
-    args.put_home_hold_sec = max(float(args.put_home_hold_sec), 0.0)
-    args.home_tilt_z_left_deg = float(getattr(
-        args, "home_tilt_z_left_deg", HOME_DEFAULTS.tilt_z_left_deg,
-    ))
-    args.home_tilt_z_right_deg = float(getattr(
-        args, "home_tilt_z_right_deg", HOME_DEFAULTS.tilt_z_right_deg,
-    ))
-    args.home_tilt_y_left_deg = float(getattr(
-        args, "home_tilt_y_left_deg", HOME_DEFAULTS.tilt_y_left_deg,
-    ))
-    args.home_tilt_y_right_deg = float(getattr(
-        args, "home_tilt_y_right_deg", HOME_DEFAULTS.tilt_y_right_deg,
-    ))
-    args.put_tilt_z_left_deg = float(getattr(
-        args, "put_tilt_z_left_deg", PUT_DEFAULTS.tilt_z_left_deg,
-    ))
-    args.put_tilt_z_right_deg = float(getattr(
-        args, "put_tilt_z_right_deg", PUT_DEFAULTS.tilt_z_right_deg,
-    ))
-    args.put_tilt_y_left_deg = float(getattr(
-        args, "put_tilt_y_left_deg", PUT_DEFAULTS.tilt_y_left_deg,
-    ))
-    args.put_tilt_y_right_deg = float(getattr(
-        args, "put_tilt_y_right_deg", PUT_DEFAULTS.tilt_y_right_deg,
-    ))
     args.gripper_calibration_tolerance = max(
         int(args.gripper_calibration_tolerance),
         0,
@@ -690,20 +135,6 @@ def normalize_gripper_args(args: argparse.Namespace) -> argparse.Namespace:
     args.left_gripper_server = str(args.left_gripper_server)
     args.right_gripper_server = str(args.right_gripper_server)
     args.grip_signal_port = int(args.grip_signal_port)
-    args.side_approach_offset_y_m = max(float(args.side_approach_offset_y_m), 0.0)
-    args.side_approach_min_abs_y_m = max(
-        float(args.side_approach_min_abs_y_m),
-        0.0,
-    )
-    args.side_approach_lift_m = max(float(args.side_approach_lift_m), 0.0)
-    args.side_approach_wrist_outward_bias_deg = max(
-        float(args.side_approach_wrist_outward_bias_deg),
-        0.0,
-    )
-    args.side_approach_max_wrist_deviation_deg = max(
-        float(args.side_approach_max_wrist_deviation_deg),
-        0.0,
-    )
     args.gripper_connect_attempts = max(int(args.gripper_connect_attempts), 1)
     args.gripper_connect_timeout_sec = max(
         float(args.gripper_connect_timeout_sec),
@@ -772,7 +203,17 @@ def parse_args() -> argparse.Namespace:
         help="Tablet web service port.",
     )
     parser.add_argument("--prompts", default="toy,yellow_screwdriver_handle,pen,rectangular object,ribbon")
-    parser.add_argument("--sam3-checkpoint-path", default="/model/sam3.pt")
+    parser.add_argument(
+        "--voice-input",
+        type=parse_bool,
+        default=True,
+        metavar="TRUE/FALSE",
+        help="Enable V-key four-second Chinese voice grasp commands.",
+    )
+    parser.add_argument(
+        "--sam3-checkpoint-path",
+        default=str(PROJECT_ROOT / "perception" / "models" / "sam3.pt"),
+    )
     parser.add_argument("--sam3-root", default=None)
     parser.add_argument(
         "--score-threshold", type=float, default=DEFAULT_SCORE_THRESHOLD
@@ -807,7 +248,7 @@ def parse_args() -> argparse.Namespace:
         metavar=("X_MIN", "Y_MIN", "X_MAX", "Y_MAX"),
         help=(
             "Only keep SAM3 detections whose bbox center is inside this pixel ROI. "
-            "Defaults to the ROI calibrated by test1.py."
+            "Defaults to the configured camera workspace ROI."
         ),
     )
     parser.add_argument(
@@ -825,23 +266,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dino-repo-path", default=None)
     parser.add_argument("--dino-ckpt-path", default=None)
     parser.add_argument("--capture-dir", default=str(DEFAULT_CAPTURE_DIR))
-    parser.add_argument(
-        "--ros2-publish",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Publish FlowPose outputs to /tf and RViz markers.",
-    )
-    parser.add_argument("--ros2-parent-frame-id", default="camera_rgb_link")
-    parser.add_argument("--ros2-base-frame-id", default="base_link")
-    parser.add_argument("--ros2-tf-topic", default="/tf")
-    parser.add_argument("--ros2-marker-topic", default="/flowpose/grasp_markers")
-    parser.add_argument("--ros2-publish-rate-hz", type=float, default=5.0)
-    parser.add_argument(
-        "--pregrasp-distance-m",
-        type=float,
-        default=None,
-        help="Override tool.yaml defaults.pregrasp_distance_m.",
-    )
     parser.add_argument("--robot-xacro-path", default=str(DEFAULT_ROBOT_XACRO_PATH))
     parser.add_argument("--camera-joint", default="camera_joint")
     parser.add_argument(
@@ -861,18 +285,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--force-object-z",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Override tool.yaml defaults.force_object_z.",
-    )
-    parser.add_argument(
-        "--forced-object-z-m",
-        type=float,
-        default=None,
-        help="Override tool.yaml defaults.forced_object_z_m.",
-    )
-    parser.add_argument(
         "--left-target-topic",
         default="/control/request_ik_tester/target_poseL",
         help="PoseStamped topic consumed by request_ik_tester for the left hand.",
@@ -883,36 +295,6 @@ def parse_args() -> argparse.Namespace:
         help="PoseStamped topic consumed by request_ik_tester for the right hand.",
     )
     parser.add_argument(
-        "--target-command-mode",
-        choices=["auto", "pose_stream", "cartesian_trajectory"],
-        default="auto",
-        help=(
-            "How to command request_ik_tester targets. auto publishes timestamped "
-            "Cartesian trajectories when a trajectory subscriber exists, otherwise "
-            "falls back to PoseStamped streaming."
-        ),
-    )
-    parser.add_argument(
-        "--left-trajectory-topic",
-        default="/control/request_ik_tester/target_trajectoryL",
-        help="MultiDOFJointTrajectory topic for left-hand Cartesian trajectories.",
-    )
-    parser.add_argument(
-        "--right-trajectory-topic",
-        default="/control/request_ik_tester/target_trajectoryR",
-        help="MultiDOFJointTrajectory topic for right-hand Cartesian trajectories.",
-    )
-    parser.add_argument(
-        "--left-trajectory-joint-name",
-        default="left_tcp",
-        help="Joint name stored in left-hand MultiDOFJointTrajectory messages.",
-    )
-    parser.add_argument(
-        "--right-trajectory-joint-name",
-        default="right_tcp",
-        help="Joint name stored in right-hand MultiDOFJointTrajectory messages.",
-    )
-    parser.add_argument(
         "--target-publish-rate-hz",
         type=float,
         default=DEFAULT_TARGET_PUBLISH_RATE_HZ,
@@ -921,14 +303,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--target-publish-sec",
         type=float,
-        default=0.5,
+        default=MOTION_CONFIG.publish_sec,
         help="Seconds to keep publishing the final target after a trajectory finishes.",
     )
     parser.add_argument(
         "--target-smooth-trajectory",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Publish Cartesian waypoints to make request_ik_tester motion smoother.",
+        help=(
+            "Deprecated compatibility option; Cartesian robot motion always uses "
+            "the unified Bezier trajectory planner."
+        ),
     )
     parser.add_argument(
         "--target-trajectory-step-m",
@@ -945,7 +330,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--target-trajectory-min-steps",
         type=int,
-        default=TARGET_TRAJECTORY_DEFAULTS.min_steps,
+        default=DEFAULT_TARGET_TRAJECTORY_MIN_STEPS,
         help="Minimum interpolation samples per non-zero path segment.",
     )
     parser.add_argument(
@@ -968,53 +353,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--target-trajectory-plot-dir",
-        default=str(DEFAULT_TRAJECTORY_PLOT_DIR),
+        default=str(MOTION_CONFIG.plot_dir),
         help="Directory where grasp path visualization PNG files are saved.",
     )
     parser.add_argument(
         "--joint-trajectory-csv-dir",
         default=str(DEFAULT_JOINT_TRAJECTORY_CSV_DIR),
         help="Directory where timestamped joint trajectory CSV files are saved.",
-    )
-    parser.add_argument(
-        "--target-trajectory-plot",
-        type=parse_bool,
-        default=None,
-        metavar="TRUE/FALSE",
-        help=(
-            "Legacy alias for --visualize-grasp-path. TRUE saves grasp path "
-            "visualizations; FALSE skips path recording/rendering."
-        ),
-    )
-    parser.add_argument(
-        "--visualize-grasp-path",
-        type=parse_optional_bool,
-        default=None,
-        metavar="TRUE/FALSE",
-        help=(
-            "Override tool.yaml defaults.visualize_grasp_path. TRUE saves a grasp "
-            "path PNG after publishing; FALSE skips visualization."
-        ),
-    )
-    parser.add_argument(
-        "--save-joint-trajectory-csv",
-        type=parse_optional_bool,
-        default=None,
-        metavar="TRUE/FALSE",
-        help=(
-            "Override tool.yaml defaults.save_joint_trajectory_csv. TRUE saves "
-            "one timestamped joint trajectory CSV row per trajectory frame."
-        ),
-    )
-    parser.add_argument(
-        "--show-raw-flowpose-window",
-        type=parse_optional_bool,
-        default=None,
-        metavar="TRUE/FALSE",
-        help=(
-            "Override tool.yaml defaults.show_raw_flowpose_window. TRUE opens "
-            "a small window with unnormalized FlowPose pose/size output."
-        ),
     )
     parser.add_argument(
         "--tool-template-path",
@@ -1025,52 +370,7 @@ def parse_args() -> argparse.Namespace:
         "--use-tool-pick-template",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Use config/tool.yaml pick waypoints for visual grasp targets when available.",
-    )
-    parser.add_argument(
-        "--use-side-approach-grasp-policy",
-        type=parse_bool,
-        default=SIDE_APPROACH_DEFAULTS.enabled,
-        metavar="TRUE/FALSE",
-        help=(
-            "Deprecated compatibility option; side-first grasp adjustment is disabled."
-        ),
-    )
-    parser.add_argument(
-        "--side-approach-offset-y-m",
-        type=float,
-        default=SIDE_APPROACH_DEFAULTS.offset_y_m,
-        help="Extra outward Y distance for the side-first grasp policy.",
-    )
-    parser.add_argument(
-        "--side-approach-min-abs-y-m",
-        type=float,
-        default=SIDE_APPROACH_DEFAULTS.min_abs_y_m,
-        help="Minimum |Y| clearance from base_link centerline for side-first grasp targets.",
-    )
-    parser.add_argument(
-        "--side-approach-lift-m",
-        type=float,
-        default=SIDE_APPROACH_DEFAULTS.lift_m,
-        help="Minimum Z lift for the inserted side approach waypoint.",
-    )
-    parser.add_argument(
-        "--side-approach-wrist-outward-bias-deg",
-        type=float,
-        default=SIDE_APPROACH_DEFAULTS.wrist_outward_bias_deg,
-        help=(
-            "Small base-frame yaw bias toward the arm's outside when FlowPose "
-            "orientation is too far from the natural wrist pose."
-        ),
-    )
-    parser.add_argument(
-        "--side-approach-max-wrist-deviation-deg",
-        type=float,
-        default=SIDE_APPROACH_DEFAULTS.max_wrist_deviation_deg,
-        help=(
-            "Maximum allowed wrist orientation deviation from natural pose before "
-            "rejecting a FlowPose/reference orientation."
-        ),
+        help="Use grasp_core/resources/tool.yaml pick waypoints for visual grasp targets when available.",
     )
     parser.add_argument("--ik-frame-id", default="base_link")
     parser.add_argument(
@@ -1086,119 +386,6 @@ def parse_args() -> argparse.Namespace:
         help="Which computed gripper target S should publish.",
     )
     parser.add_argument("--ik-target-index", type=int, default=0)
-    parser.add_argument(
-        "--use-flowpose-grasp-rotation",
-        type=parse_optional_bool,
-        default=None,
-        metavar="TRUE/FALSE",
-        help="Override tool.yaml defaults.use_flowpose_grasp_rotation.",
-    )
-    parser.add_argument(
-        "--use-cube-z-symmetry-grasp-policy",
-        type=parse_optional_bool,
-        default=None,
-        metavar="TRUE/FALSE",
-        help=(
-            "Override tool.yaml defaults.use_cube_z_symmetry_grasp_policy. "
-            "When TRUE, cube FlowPose poses may rotate around local Z by "
-            "0/90/180/-90 degrees so local -X faces the selected gripper side."
-        ),
-    )
-    parser.add_argument(
-        "--ik-grasp-tcp-offset-m",
-        nargs=3,
-        type=float,
-        default=None,
-        metavar=("X", "Y", "Z"),
-        help="Override tool.yaml defaults.ik_grasp_tcp_offset_m.",
-    )
-    parser.add_argument(
-        "--ik-pregrasp-extra-offset-m",
-        nargs=3,
-        type=float,
-        default=None,
-        metavar=("X", "Y", "Z"),
-        help="Override tool.yaml defaults.ik_pregrasp_extra_offset_m.",
-    )
-    parser.add_argument(
-        "--ik-orientation-quat",
-        nargs=4,
-        type=float,
-        default=None,
-        metavar=("X", "Y", "Z", "W"),
-        help="Override tool.yaml defaults.ik_orientation_quat.",
-    )
-    parser.add_argument(
-        "--lift-distance-m",
-        type=float,
-        default=None,
-        help="Override tool.yaml defaults.lift_distance_m.",
-    )
-    parser.add_argument(
-        "--approach-axis",
-        default=None,
-        choices=["x", "y", "z"],
-        help="Override tool.yaml defaults.approach_axis.",
-    )
-    parser.add_argument(
-        "--approach-sign",
-        type=float,
-        default=None,
-        help="Override tool.yaml defaults.approach_sign.",
-    )
-    parser.add_argument(
-        "--ik-downward-tilt-deg",
-        type=float,
-        default=None,
-        help="Override tool.yaml defaults.ik_downward_tilt_deg.",
-    )
-    parser.add_argument(
-        "--ik-downward-tilt-axis",
-        choices=["x", "y", "z"],
-        default=None,
-        help="Override tool.yaml defaults.ik_downward_tilt_axis.",
-    )
-    parser.add_argument(
-        "--ik-downward-tilt-y-deg",
-        type=float,
-        default=None,
-        help="Override tool.yaml defaults.ik_downward_tilt_y_deg.",
-    )
-    parser.add_argument(
-        "--ik-downward-tilt-frame",
-        choices=["local", "base"],
-        default=None,
-        help="Override tool.yaml defaults.ik_downward_tilt_frame.",
-    )
-    parser.add_argument(
-        "--right-home-xyz",
-        nargs=3,
-        type=float,
-        default=HOME_DEFAULTS.right_xyz,
-        metavar=("X", "Y", "Z"),
-        help="Right hand home target published by H.",
-    )
-    parser.add_argument(
-        "--left-home-xyz",
-        nargs=3,
-        type=float,
-        default=HOME_DEFAULTS.left_xyz,
-        metavar=("X", "Y", "Z"),
-        help="Left hand home target published by J.",
-    )
-
-    parser.add_argument(
-        "--home-safe-z-m",
-        type=float,
-        default=HOME_DEFAULTS.safe_z_m,
-        help="Safe z height used before moving sideways/back to home.",
-    )
-    parser.add_argument(
-        "--home-side-clearance-y-m",
-        type=float,
-        default=HOME_DEFAULTS.side_clearance_y_m,
-        help="Minimum absolute y used as the left/right side corridor during home return.",
-    )
     parser.add_argument("--grip-signal-host", default=GRIP_SIGNAL_DEFAULTS.host)
     parser.add_argument(
         "--grip-signal-port", type=int, default=GRIP_SIGNAL_DEFAULTS.port
@@ -1218,7 +405,7 @@ def parse_args() -> argparse.Namespace:
         "--grip-signal-auto-start",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Start daimon_stuff/grip_signal_receiver.py together with this demo.",
+        help="Start daimon_gripper/grip_signal_receiver.py together with this demo.",
     )
     parser.add_argument(
         "--grip-signal-receiver-path",
@@ -1246,7 +433,7 @@ def parse_args() -> argparse.Namespace:
         "--grip-drop-poll-interval",
         type=float,
         default=GRIP_SIGNAL_DEFAULTS.drop_poll_interval,
-        help="Seconds between gripper position samples during transport to put.",
+        help="Seconds between gripper position samples during transport to place.",
     )
     parser.add_argument(
         "--gripper-server",
@@ -1567,7 +754,7 @@ def parse_args() -> argparse.Namespace:
         default=GRIP_SIGNAL_DEFAULTS.post_confirm_hold_sec,
         help=(
             "Seconds to hold the grasp pose after the gripper confirms success. "
-            "Keep this low to start the put motion immediately after contact."
+            "Keep this low to start the place motion immediately after contact."
         ),
     )
     parser.add_argument(
@@ -1575,7 +762,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=GRIP_SIGNAL_DEFAULTS.lift_hold_sec,
         help=(
-            "Seconds to hold after the post-grip lift waypoint before auto put. "
+            "Seconds to hold after the post-grip lift waypoint before auto place. "
             "This only affects the intermediate lift after a confirmed grasp."
         ),
     )
@@ -1589,97 +776,30 @@ def parse_args() -> argparse.Namespace:
         "--grip-retry-max-attempts",
         type=int,
         default=GRIP_SIGNAL_DEFAULTS.retry_max_attempts,
-        help="Maximum automatic retries after min-limit grip failure; 0 means unlimited.",
+        help=(
+            "Deprecated compatibility option; failed-grasp retries are now "
+            "unlimited. Use --no-grip-retry-loop to stop automatic retries."
+        ),
     )
     parser.add_argument(
-        "--enable-put-after-grasp",
+        "--enable-place-after-grasp",
         type=parse_bool,
         default=True,
         metavar="TRUE/FALSE",
         help=(
-            "TRUE automatically runs the fixed put action after a "
-            "gripper-confirmed successful grasp; FALSE disables auto put."
+            "TRUE automatically runs the fixed place action after a "
+            "gripper-confirmed successful grasp; FALSE disables auto place."
         ),
     )
     parser.add_argument(
-        "--continuous-grasp-after-put",
+        "--continuous-grasp-after-place",
         type=parse_bool,
         default=True,
         metavar="TRUE/FALSE",
         help=(
             "TRUE starts the same capture -> SAM3 -> FlowPose -> grasp workflow "
-            "as the A key after every successful put and after completed grip-"
+            "as the A key after every successful place and after completed grip-"
             "failure recovery (default: TRUE); FALSE stops automatic continuation."
         ),
     )
-    parser.add_argument(
-        "--put-target-hold-sec",
-        type=float,
-        default=PUT_DEFAULTS.target_hold_sec,
-        help="Seconds to hold the put target before opening the gripper.",
-    )
-    parser.add_argument(
-        "--home-tilt-z-left-deg",
-        type=float,
-        default=HOME_DEFAULTS.tilt_z_left_deg,
-        help="Left wrist local-Z angle at Home (default: 0 degrees).",
-    )
-    parser.add_argument(
-        "--home-tilt-z-right-deg",
-        type=float,
-        default=HOME_DEFAULTS.tilt_z_right_deg,
-        help="Right wrist local-Z angle at Home (default: 0 degrees).",
-    )
-    parser.add_argument(
-        "--home-tilt-y-left-deg",
-        type=float,
-        default=HOME_DEFAULTS.tilt_y_left_deg,
-        help="Left wrist local-Y angle at Home (default: 0 degrees).",
-    )
-    parser.add_argument(
-        "--home-tilt-y-right-deg",
-        type=float,
-        default=HOME_DEFAULTS.tilt_y_right_deg,
-        help="Right wrist local-Y angle at Home (default: 0 degrees).",
-    )
-    parser.add_argument(
-        "--put-home-hold-sec",
-        type=float,
-        default=PUT_DEFAULTS.home_hold_sec,
-        help="Seconds to hold the home target after put release.",
-    )
-    parser.add_argument(
-        "--put-tilt-z-left-deg",
-        type=float,
-        default=PUT_DEFAULTS.tilt_z_left_deg,
-        help="Left wrist local-Z angle at put (default: 0 degrees).",
-    )
-    parser.add_argument(
-        "--put-tilt-z-right-deg",
-        type=float,
-        default=PUT_DEFAULTS.tilt_z_right_deg,
-        help="Right wrist local-Z angle at put (default: 0 degrees).",
-    )
-    parser.add_argument(
-        "--put-tilt-y-left-deg",
-        type=float,
-        default=PUT_DEFAULTS.tilt_y_left_deg,
-        help="Left wrist local-Y angle at put (default: 0 degrees).",
-    )
-    parser.add_argument(
-        "--put-tilt-y-right-deg",
-        type=float,
-        default=PUT_DEFAULTS.tilt_y_right_deg,
-        help="Right wrist local-Y angle at put (default: 0 degrees).",
-    )
-    parser.add_argument(
-        "--put-keep-pose",
-        type=parse_bool,
-        default=PUT_DEFAULTS.keep_put_pose,
-        metavar="TRUE/FALSE",
-        help=(
-            "TRUE keeps the arm at the released put pose and starts the next "
-            "A-key grasp from there; FALSE returns the arm home after release."
-        ),
-    )
-    return apply_grasp_config_defaults(parser.parse_args())
+    return normalize_gripper_args(parser.parse_args())

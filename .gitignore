@@ -1,14 +1,9 @@
-# model weights
-model/
+# Model weights and runtime captures
+perception/models/*
+!perception/models/.gitkeep
 captures/
 
-
-# python cache
+# Python cache
 __pycache__/
 *.pyc
-model/
-__pycache__/
-*.pyc
-capture/
-__pycache__/
-*.pyc
+.pytest_cache/

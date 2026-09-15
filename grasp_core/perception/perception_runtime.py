@@ -27,15 +27,14 @@ from grasp_core.perception.flowpose_pipeline import (
     resolve_checkpoint_path,
     resolve_existing_path,
 )
-from grasp_core.core.robot_target_pose import TargetObjectPose, make_child_frame_ids, make_target_object_pose
-from grasp_core.ui.request_ik_ui import (
+from grasp_core.core.types.robot_target_pose import TargetObjectPose, make_child_frame_ids, make_target_object_pose
+from grasp_core.tools.request_ik_ui import (
     draw_base_target_overlay,
     print_base_target_objects,
     print_flowpose_objects,
     print_flowpose_timing,
     print_sam3_timing,
 )
-from grasp_core.communication.flowpose_ros_bridge import FlowPoseRosBridge
 from grasp_core.perception.realsense_sam3 import CaptureBundle
 
 def build_runner_kwargs(args: argparse.Namespace) -> tuple[dict, dict, Path]:
@@ -106,7 +105,6 @@ def collect_flowpose_results(
     latest_overlay: np.ndarray | None,
     latest_base_targets: list[TargetObjectPose],
     status: str,
-    ros_bridge: FlowPoseRosBridge | None,
     base_to_camera: np.ndarray,
     show_base_targets: bool,
     args: argparse.Namespace,
@@ -140,9 +138,6 @@ def collect_flowpose_results(
                 x, y, z = target.base_xyz.tolist()
                 status += f" | base {target.frame_id}=({x:.3f},{y:.3f},{z:.3f})m"
             print_flowpose_timing(flowpose_result)
-            if ros_bridge is not None:
-                ros_bridge.update_result(flowpose_result)
-                status += "; ROS2 TF publishing"
             print(f"[FlowPose] saved result: {flowpose_result.result_path}", flush=True)
         except Exception:
             latest_base_targets = []
@@ -224,34 +219,6 @@ def replace_target_object_z(
         size=target.size.copy() if isinstance(target.size, np.ndarray) else target.size,
         score=target.score,
     )
-
-def build_ros_bridge(
-    args: argparse.Namespace,
-    base_to_camera: np.ndarray,
-) -> FlowPoseRosBridge | None:
-    try:
-        bridge = FlowPoseRosBridge(
-            parent_frame_id=args.ros2_parent_frame_id,
-            base_frame_id=args.ros2_base_frame_id,
-            tf_topic=args.ros2_tf_topic,
-            marker_topic=args.ros2_marker_topic,
-            publish_rate_hz=args.ros2_publish_rate_hz,
-            pregrasp_distance_m=args.pregrasp_distance_m,
-            lift_distance_m=args.lift_distance_m,
-            approach_axis=args.approach_axis,
-            approach_sign=args.approach_sign,
-            base_to_camera=base_to_camera,
-        )
-    except RuntimeError as exc:
-        print(f"[ROS2] disabled: {exc}", flush=True)
-        return None
-    print(
-        "[ROS2] publishing FlowPose TF "
-        f"{args.ros2_base_frame_id} -> {args.ros2_parent_frame_id} -> object frames; "
-        f"markers on {args.ros2_marker_topic}; target pose on /flowpose/target_pose_base",
-        flush=True,
-    )
-    return bridge
 
 def freeze_bundle(bundle: CaptureBundle) -> CaptureBundle:
     return CaptureBundle(

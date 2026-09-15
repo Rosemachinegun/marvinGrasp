@@ -2,7 +2,7 @@ from argparse import Namespace
 
 import numpy as np
 
-from grasp_core.core.pose_math import (
+from grasp_core.core.math.pose import (
     ik_downward_tilt_deg_for_hand,
     ik_downward_tilt_y_deg_for_hand,
     ik_home_wrist_orientation_quat,

@@ -1,83 +1,79 @@
-# everygrasp 目录说明
+# Project Structure
 
-`grasp_core/` 是当前机器人抓取项目的主体代码包。一级目录只保留顶层包文件和说明文档，所有业务代码都放在二级功能目录中。
-![System Architecture](frame.png)
-
-## 功能目录
-
-| 目录 | 职责 |
-|---|---|
-| `apps/` | 应用入口、主循环、按键事件、资源生命周期 |
-| `perception/` | RealSense、SAM3、FlowPose、感知结果收集 |
-| `core/` | 位姿数据结构、坐标转换、四元数和几何工具 |
-| `config/` | 命令行参数、默认值、YAML 配置读取 |
-| `planning/` | 抓取目标位姿规划、tool.yaml waypoint 模板展开 |
-| `motion/` | 轨迹插值和轨迹步长计算 |
-| `communication/` | ROS2、IK target、夹爪 socket 等底层通信 |
-| `tasks/` | 抓取、回 home、夹爪动作、失败恢复等任务执行 |
-| `ui/` | OpenCV dashboard 和状态显示 |
-
-## 入口链路
+仓库当前采用按职责分层的结构。运行入口位于 `grasp_core/tools/`，动作编排、技能执行和硬件通信分别由不同模块负责。
 
 ```text
-flowpose_request_ik_tester.py
-  -> grasp_core/apps/flowpose_request_ik_app.py
-  -> grasp_core/tasks/robot_actions.py
-  -> grasp_core/tasks/grasp_request_ik.py
-  -> grasp_core/planning/ + grasp_core/motion/ + grasp_core/communication/
+marvinGrasp/
+│
+├── perception/
+│   ├── flowpose/                 FlowPose 模型源码与推理脚本
+│   ├── sam3/                     SAM3 源码（独立仓库指针）
+│   └── models/                   本地模型权重；仅追踪 .gitkeep
+│
+├── grasp_core/
+│   ├── perception/               相机、SAM3、FlowPose 运行时封装
+│   │   ├── realsense_sam3.py
+│   │   ├── perception_runtime.py
+│   │   └── flowpose_pipeline.py
+│   │
+│   ├── core/                     通用数学、数据类型和文件读写
+│   │   ├── math/                 位姿、旋转、向量、物体轴线
+│   │   ├── types/                相机、目标和末端目标位姿
+│   │   └── io/                   目标位姿加载
+│   │
+│   ├── config/                   运行配置和参数解析
+│   │   ├── request_ik_config.py  CLI 兼容入口
+│   │   ├── defaults.py / normalizers.py
+│   │   ├── gripper_config.py
+│   │   └── trajectory_config.py
+│   │
+│   ├── planning/
+│   │   ├── grasp/                抓取姿态策略和模板
+│   │   └── trajectory/           笛卡尔轨迹、插值和时间参数
+│   │
+│   ├── execution/                机器人动作执行层
+│   │   ├── config.py             执行层统一配置
+│   │   ├── motion_executor.py    轨迹下发与执行循环
+│   │   ├── robot_skill_service.py 技能服务和动作接口
+│   │   ├── drop_monitor.py       掉落检测
+│   │   └── skills/
+│   │       ├── grasp.py          抓取规划与执行
+│   │       ├── place.py          放置规划与执行
+│   │       └── home.py           Home 和恢复动作
+│   │
+│   ├── communication/            ROS2、IK、夹爪和反馈通信
+│   │   ├── request_ik_transport.py
+│   │   ├── request_ik_feedback.py
+│   │   └── gripper_signal.py
+│   │
+│   ├── ui/                       平板 Web UI 与主循环桥接
+│   │   └── tablet_ui.py
+│   ├── apps/                     可选应用输入
+│   │   └── voice_grasp.py        录音、Whisper 和中文抓取命令
+│   │
+│   ├── resources/                仓库内默认资源
+│   │   ├── tool.yaml
+│   │   └── stand_v3.urf.xacro
+│   │
+│   └── tools/                    应用入口、UI 和轨迹诊断
+│       └── flowpose_request_ik_app.py
+│
+├── daimon_gripper/
+│   ├── dm_gripper_py/            夹爪 SDK（独立仓库指针）
+│   ├── dm_gripper_cam_py/        相机夹爪接口（独立仓库指针）
+│   ├── dm_gripper_tac_py/        触觉夹爪接口（独立仓库指针）
+│   └── grip_signal_*.py          夹爪信号服务和设备封装
+│
+├── eye2hand_calibration/         手眼标定工具
+├── tests/                        单元测试和执行流程测试
+│
+├── flowpose_request_ik_tester.py 主程序启动脚本
+│
+└── README.md
 ```
 
-## 扩展规则
-
-- 新增抓取、放置、分类任务：放到 `tasks/`
-- 新增抓取姿态策略或模板解析：放到 `planning/`
-- 新增轨迹插值、速度曲线、路径采样：放到 `motion/`
-- 新增相机、分割模型、位姿估计模型：放到 `perception/`
-- 新增 ROS topic、夹爪、机械臂通信：放到 `communication/`
-- 新增共享位姿结构和坐标数学：放到 `core/`
-
-每个通用能力只保留一个入口，其他模块只能调用，不再复制实现。
-
-## 平板控制台
-
-运行主入口后会同时启动浅蓝色平板 Web 控制台，服务默认监听
-`0.0.0.0:7860`。平板和机器人处于同一局域网时，访问：
-
-```text
-http://机器人IP:7860/
-```
-
-例如机器人 IP 为 `192.168.10.123` 时，地址为
-`http://192.168.10.123:7860/`。页面持续显示 RealSense 原始彩色画面，
-“识别与定位”复用热键 Z 的 SAM3 + FlowPose 流程，“识别并执行抓取”复用
-热键 A 的 SAM3 + FlowPose + 机械臂执行流程；Home 和停止也沿用主循环现有接口。
-
-可用 TRUE/FALSE 参数控制是否启动平板服务，并可覆盖监听地址和端口：
-
-```bash
-python flowpose_request_ik_tester.py --tablet-ui TRUE
-python flowpose_request_ik_tester.py --tablet-ui FALSE
-python flowpose_request_ik_tester.py --tablet-ui TRUE --tablet-ui-port 7861
-```
-
-页面刷新间隔默认 0.25 秒，可通过环境变量
-`TASK_LOOP_UI_REFRESH_SEC` 调整。
-
-## 夹爪部分
-
-- `daimon_stuff/dm_gripper_cam_py/` 腕部相机相关功能包
-- `daimon_stuff/dm_gripper_tac_py/` 触觉传感器相关功能包；`daimon_stuff/tac.py` 是触觉入口。4个传感器启动规则如下
-    |1
-    |python daimon_stuff/tac.py --remote-addr 192.168.10.11:50052 --dev-id 2 --pc-host 192.168.10.123 --pc-port 60031
-    |2
-    |python daimon_stuff/tac.py --remote-addr 192.168.10.11:50051 --dev-id 0 --pc-host 192.168.10.123 --pc-port 60030
-    |3
-    |python daimon_stuff/tac.py --remote-addr 192.168.10.10:50052 --dev-id 2 --pc-host 192.168.10.123 --pc-port 60033
-    |4
-    |python daimon_stuff/tac.py --remote-addr 192.168.10.10:50051 --dev-id 0 --pc-host 192.168.10.123 --pc-port 60032
-- `gripper/` 不再放 Python 文件，Daimon 相关入口统一放在 `daimon_stuff/`
-
-直接按 L：双夹爪一起闭合。
-先按 J 再按 L：只闭合左夹爪。
-先按 H 再按 L：只闭合右夹爪。
-# DaimonGeneral
+默认会在 `0.0.0.0:7860` 启动平板界面，并启用 `V` 键/网页按钮的 4 秒中文语音抓取。可用
+`--tablet-ui false` 或 `--voice-input false` 分别关闭；监听地址与端口可通过
+`--tablet-ui-host`、`--tablet-ui-port` 修改。语音模型可通过
+`VOICE_WHISPER_MODEL`、`VOICE_WHISPER_DEVICE` 和
+`VOICE_WHISPER_COMPUTE_TYPE` 环境变量配置。

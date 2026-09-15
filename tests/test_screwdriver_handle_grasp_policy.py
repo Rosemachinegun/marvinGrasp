@@ -2,13 +2,13 @@ from argparse import Namespace
 
 import numpy as np
 
-from grasp_core.core.pose_math import quaternion_to_rotation_matrix
-from grasp_core.core.long_object_axes import canonical_long_object_pose
-from grasp_core.core.robot_target_pose import TargetObjectPose
-from grasp_core.planning.grasp_pose import make_gripper_target_pose
-from grasp_core.planning.tool_pick_templates import build_pick_template_waypoints
-import grasp_core.tasks.screwdriver_handle_grasp_policy as screwdriver_policy
-from grasp_core.tasks.screwdriver_handle_grasp_policy import (
+from grasp_core.core.math.pose import quaternion_to_rotation_matrix
+from grasp_core.core.math.object_axes import canonical_long_object_pose
+from grasp_core.core.types.robot_target_pose import TargetObjectPose
+from grasp_core.planning.grasp.grasp_pose import make_gripper_target_pose
+from grasp_core.planning.grasp.tool_pick_templates import build_pick_template_waypoints
+import grasp_core.planning.grasp.policies.long_object as screwdriver_policy
+from grasp_core.planning.grasp.policies.long_object import (
     LongObjectGraspPolicy,
     approach_axis_from_orientation,
     build_screwdriver_handle_pick_waypoints,

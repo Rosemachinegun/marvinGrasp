@@ -2,8 +2,8 @@ from argparse import Namespace
 
 import numpy as np
 
-from grasp_core.core.robot_target_pose import TargetObjectPose
-from grasp_core.tasks.cube_z_symmetry_grasp_policy import (
+from grasp_core.core.types.robot_target_pose import TargetObjectPose
+from grasp_core.planning.grasp.policies.cube_z_symmetry import (
     apply_cube_z_symmetry_grasp_policy,
 )
 

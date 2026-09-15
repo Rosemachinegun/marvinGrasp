@@ -80,8 +80,8 @@ def test_default_grip_confirmation_is_low_latency() -> None:
 
     assert GRIPPER_DEFAULTS.left_grip_speed == 80
     assert GRIPPER_DEFAULTS.right_grip_speed == 80
-    assert GRIPPER_DEFAULTS.left_poll_interval == 0.02
-    assert GRIPPER_DEFAULTS.right_poll_interval == 0.02
+    assert GRIPPER_DEFAULTS.left_poll_interval == 0.01
+    assert GRIPPER_DEFAULTS.right_poll_interval == 0.01
     assert GRIPPER_DEFAULTS.left_contact_grace == 0.1
     assert GRIPPER_DEFAULTS.right_contact_grace == 0.1
     assert GRIPPER_DEFAULTS.left_stall_samples == 3

@@ -28,6 +28,7 @@ class TabletCommand(str, Enum):
 
     PERCEIVE = "perceive"
     GRASP = "grasp"
+    VOICE = "voice"
     HOME_LEFT = "home_left"
     HOME_RIGHT = "home_right"
     STOP = "stop"
@@ -43,8 +44,24 @@ class TabletSnapshot:
     image_rgb: np.ndarray | None
     sam_rgb: np.ndarray | None
     flowpose_rgb: np.ndarray | None
+    base_target_text: str
     status: str
     activity: str
+
+
+def format_base_target_text(targets: list[object], *, limit: int = 6) -> str:
+    """Format target objects for the tablet without coupling it to core types."""
+    lines: list[str] = []
+    for target in targets[:limit]:
+        xyz = getattr(target, "base_xyz", ())
+        if len(xyz) < 3:
+            continue
+        label = getattr(target, "frame_id", getattr(target, "label", "target"))
+        lines.append(
+            f"{label}: x={float(xyz[0]):.3f} y={float(xyz[1]):.3f} "
+            f"z={float(xyz[2]):.3f} m"
+        )
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -59,9 +76,12 @@ class TabletTaskLoopBridge:
         self._commands: SimpleQueue[TabletCommand] = SimpleQueue()
         self._lock = Lock()
 
+        # Raw RGB is still stored for compatibility with the existing backend,
+        # but the compact tablet UI does not display it.
         self._image_rgb: np.ndarray | None = None
         self._sam_rgb: np.ndarray | None = None
         self._flowpose_rgb: np.ndarray | None = None
+        self._base_target_text = ""
 
         self._status = "Connecting to robot vision..."
         self._activity = "Tablet control ready"
@@ -77,16 +97,19 @@ class TabletTaskLoopBridge:
                 "Requested: SAM3 + FlowPose",
 
             TabletCommand.GRASP:
-                "Requested: Perception + Autonomous Grasp",
+                "Requested: Autonomous grasp",
+
+            TabletCommand.VOICE:
+                "Requested: 4-second voice command",
 
             TabletCommand.HOME_LEFT:
-                "Requested: Left Arm Home",
+                "Requested: Left arm home",
 
             TabletCommand.HOME_RIGHT:
-                "Requested: Right Arm Home",
+                "Requested: Right arm home",
 
             TabletCommand.STOP:
-                "Requested: Stop Current Task",
+                "Requested: Stop current task",
         }
 
         activity = messages[command]
@@ -130,8 +153,9 @@ class TabletTaskLoopBridge:
         status: str,
         sam_bgr: np.ndarray | None = None,
         flowpose_bgr: np.ndarray | None = None,
+        base_target_text: str = "",
     ) -> None:
-        """Publish frames and status for the next browser polling cycle."""
+        """Publish perception frames for the next browser polling cycle."""
 
         image_rgb = self._to_browser_rgb(image_bgr)
         sam_rgb = self._to_browser_rgb(sam_bgr)
@@ -141,6 +165,7 @@ class TabletTaskLoopBridge:
             self._image_rgb = image_rgb
             self._sam_rgb = sam_rgb
             self._flowpose_rgb = flowpose_rgb
+            self._base_target_text = str(base_target_text)
             self._status = str(status)
 
     def set_activity(
@@ -178,40 +203,52 @@ class TabletTaskLoopBridge:
                 image_rgb=image,
                 sam_rgb=sam,
                 flowpose_rgb=flowpose,
+                base_target_text=self._base_target_text,
                 status=self._status,
                 activity=self._activity,
             )
 
 
 # =============================================================================
-# Visual style
+# Compact single-screen visual style
 # =============================================================================
 
 
 TABLET_CSS = r"""
 :root {
-    --ink-0: #05090f;
-    --ink-1: #08131b;
-    --ink-2: #0d202a;
+    --bg-0: #04080d;
+    --bg-1: #071219;
+    --bg-2: #0a1b23;
 
-    --mist: #dcece8;
-    --muted: rgba(220, 236, 232, .54);
+    --panel: rgba(9, 25, 32, .91);
+    --panel-soft: rgba(10, 30, 38, .78);
 
-    --jade: #83d8cb;
-    --jade-bright: #b7fff0;
-    --river: #4fa8bb;
+    --text: #e9f4f0;
+    --text-soft: #9eb8b2;
+    --text-dim: #69847f;
 
-    --gold: #d7b36a;
-    --coral: #e68572;
+    --jade: #6bc8bb;
+    --jade-bright: #a5f5e5;
+    --jade-dark: #173f3d;
+    --jade-deep: #0d302f;
 
-    --glass: rgba(9, 23, 30, .74);
-    --glass-strong: rgba(6, 17, 23, .90);
-    --line: rgba(173, 225, 216, .13);
+    --blue: #398aa0;
+    --blue-dark: #123745;
+
+    --gold: #d3aa60;
+    --gold-dark: #49391f;
+    --gold-deep: #302715;
+
+    --red: #dd725f;
+    --red-dark: #54231f;
+    --red-deep: #351715;
+
+    --line: rgba(161, 219, 208, .15);
 
     --serif:
         "Noto Serif SC",
         "Source Han Serif SC",
-        "Songti SC",
+        Georgia,
         serif;
 
     --sans:
@@ -219,6 +256,7 @@ TABLET_CSS = r"""
         "Noto Sans SC",
         "Source Han Sans SC",
         "PingFang SC",
+        system-ui,
         sans-serif;
 
     --mono:
@@ -229,47 +267,45 @@ TABLET_CSS = r"""
 }
 
 
-/* =========================================================================
-   Base
-========================================================================= */
+/* =============================================================================
+   Page
+============================================================================= */
 
-html {
-    scroll-behavior: smooth;
+html,
+body {
+    margin: 0;
+    width: 100%;
+    min-height: 100%;
+    background: var(--bg-0);
 }
 
 body {
-    margin: 0;
-    background: var(--ink-0);
+    overflow-x: hidden;
 }
 
 .gradio-container {
     position: relative;
-    min-height: 100vh;
-    overflow-x: hidden;
 
-    color: var(--mist) !important;
+    min-height: 100vh;
+
+    color: var(--text) !important;
     font-family: var(--sans) !important;
 
     background:
         radial-gradient(
-            circle at 12% 3%,
-            rgba(87, 173, 170, .17),
-            transparent 30rem
+            circle at 8% -5%,
+            rgba(55, 151, 145, .17),
+            transparent 26rem
         ),
         radial-gradient(
-            circle at 90% 10%,
-            rgba(215, 179, 106, .09),
-            transparent 28rem
-        ),
-        radial-gradient(
-            circle at 50% 100%,
-            rgba(42, 116, 129, .19),
-            transparent 36rem
+            circle at 96% 5%,
+            rgba(211, 170, 96, .08),
+            transparent 24rem
         ),
         linear-gradient(
-            180deg,
-            #05090f 0%,
-            #07141b 45%,
+            145deg,
+            var(--bg-0) 0%,
+            var(--bg-1) 52%,
             #061017 100%
         ) !important;
 }
@@ -283,34 +319,34 @@ body {
     position: fixed;
     inset: 0;
 
-    z-index: 0;
     pointer-events: none;
 
-    opacity: .30;
+    opacity: .27;
 
     background-image:
         linear-gradient(
-            rgba(164, 224, 214, .025) 1px,
+            rgba(161, 219, 208, .024) 1px,
             transparent 1px
         ),
         linear-gradient(
             90deg,
-            rgba(164, 224, 214, .025) 1px,
+            rgba(161, 219, 208, .024) 1px,
             transparent 1px
         );
 
-    background-size: 54px 54px;
+    background-size:
+        52px 52px;
 
     mask-image:
         linear-gradient(
             to bottom,
             black,
-            transparent 88%
+            transparent 92%
         );
 }
 
 
-/* film grain */
+/* fine grain */
 
 .gradio-container::after {
     content: "";
@@ -319,145 +355,131 @@ body {
     inset: 0;
 
     pointer-events: none;
-    z-index: 0;
 
-    opacity: .055;
+    opacity: .045;
 
     background-image:
         url(
-            "data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.9'/%3E%3C/svg%3E"
+            "data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.8'/%3E%3C/svg%3E"
         );
 }
+
 
 .gradio-container > .main,
 .gradio-container .main {
     position: relative;
+
     z-index: 1;
 
-    max-width: 1400px !important;
+    width: min(1380px, calc(100vw - 24px)) !important;
+    max-width: 1380px !important;
 
     margin: 0 auto !important;
-    padding: 18px 26px 36px !important;
+
+    padding:
+        10px 0 12px !important;
 }
+
 
 footer {
     display: none !important;
 }
 
 
-/* =========================================================================
-   Main shell
-========================================================================= */
-
 #tablet-shell {
-    width: 100%;
+    gap: 9px !important;
 }
 
 
-/* =========================================================================
-   Hero
-========================================================================= */
+/* =============================================================================
+   Compact header
+============================================================================= */
 
-#tablet-hero {
+#compact-header {
     position: relative;
+
+    display: flex;
+
+    align-items: center;
+    justify-content: space-between;
+
+    min-height: 62px;
 
     overflow: hidden;
 
-    margin: 2px 0 18px;
-    padding: 30px 38px 26px;
+    padding:
+        11px 18px;
 
     border:
-        1px solid rgba(174, 231, 220, .14);
+        1px solid var(--line);
 
-    border-radius: 28px;
+    border-radius:
+        17px;
 
     background:
         linear-gradient(
-            135deg,
-            rgba(14, 35, 43, .94),
-            rgba(6, 13, 20, .78)
-        ),
-        radial-gradient(
-            circle at 80% 0%,
-            rgba(133, 216, 203, .14),
-            transparent 38%
+            120deg,
+            rgba(13, 40, 48, .96),
+            rgba(6, 17, 23, .94)
         );
 
     box-shadow:
-        0 28px 80px rgba(0, 0, 0, .32),
-        inset 0 1px rgba(255, 255, 255, .035);
-
-    isolation: isolate;
+        0 13px 35px rgba(0, 0, 0, .27),
+        inset 0 1px rgba(255, 255, 255, .025);
 }
 
-#tablet-hero::before {
+
+#compact-header::after {
     content: "";
 
     position: absolute;
 
-    width: 410px;
-    height: 410px;
+    width: 260px;
+    height: 260px;
 
-    right: -90px;
-    top: -260px;
+    right: -95px;
+    top: -205px;
 
     border:
-        1px solid rgba(177, 239, 228, .15);
+        1px solid rgba(165, 245, 229, .13);
 
-    border-radius: 50%;
+    border-radius:
+        50%;
 
     box-shadow:
-        0 0 0 38px rgba(177, 239, 228, .02),
-        0 0 0 88px rgba(177, 239, 228, .014),
-        0 0 100px rgba(96, 186, 183, .11);
+        0 0 0 30px rgba(165, 245, 229, .017),
+        0 0 70px rgba(80, 181, 172, .10);
 
     animation:
-        hero-breathe 7s ease-in-out infinite;
+        breathe 7s ease-in-out infinite;
+
+    pointer-events: none;
 }
 
-#tablet-hero::after {
-    content: "";
 
-    position: absolute;
-
-    left: -8%;
-    right: -8%;
-    bottom: -54px;
-
-    height: 100px;
-
-    border-radius: 50% 50% 0 0;
-
-    background:
-        repeating-radial-gradient(
-            ellipse at 50% 100%,
-            transparent 0 28px,
-            rgba(110, 207, 195, .07) 29px 30px
-        );
-
-    animation:
-        lake-drift 8s ease-in-out infinite alternate;
-
-    z-index: -1;
+.brand-block {
+    min-width: 0;
 }
 
-.hero-topline {
+
+.brand-top {
     display: flex;
+
     align-items: center;
 
-    gap: 11px;
-
-    margin-bottom: 15px;
+    gap: 9px;
 
     color: var(--jade);
 
     font-family: var(--mono);
-    font-size: 10px;
 
-    letter-spacing: .20em;
+    font-size: 9px;
 
-    text-transform: uppercase;
+    letter-spacing: .18em;
+
+    white-space: nowrap;
 }
+
 
 .live-dot {
     width: 7px;
@@ -470,117 +492,133 @@ footer {
     background: var(--jade-bright);
 
     box-shadow:
-        0 0 0 6px rgba(183, 255, 240, .07),
-        0 0 20px rgba(183, 255, 240, .62);
+        0 0 0 5px rgba(165, 245, 229, .06),
+        0 0 16px rgba(165, 245, 229, .55);
 
     animation:
-        pulse-dot 2.2s ease-in-out infinite;
+        pulse 2.2s ease-in-out infinite;
 }
 
-.hero-title {
-    margin: 0;
 
-    color: #f1f7f4;
+.brand-title {
+    margin:
+        3px 0 0;
+
+    color: #f2f8f6;
 
     font-family: var(--serif);
 
     font-size:
-        clamp(34px, 5vw, 62px);
+        clamp(23px, 2.8vw, 36px);
 
-    font-weight: 500;
+    font-weight:
+        500;
 
-    line-height: 1.08;
+    line-height: 1;
 
-    letter-spacing: -.035em;
+    letter-spacing:
+        -.025em;
 }
 
-.hero-title em {
-    color: var(--jade-bright);
-
-    font-style: normal;
-
-    text-shadow:
-        0 0 35px rgba(127, 224, 207, .18);
-}
-
-.hero-sub {
-    max-width: 700px;
-
-    margin:
-        13px 0 20px;
-
-    color:
-        rgba(220, 236, 232, .58);
-
-    font-family: var(--serif);
-
-    font-size: 14px;
-
-    line-height: 1.8;
-
-    letter-spacing: .025em;
-}
 
 .pipeline {
-    display: flex;
-    flex-wrap: wrap;
+    position: relative;
 
-    gap: 8px;
+    z-index: 1;
+
+    display: flex;
+
+    align-items: center;
+
+    gap: 7px;
 }
+
 
 .pipeline span {
-    padding: 7px 11px;
+    padding:
+        6px 9px;
 
     border:
-        1px solid rgba(160, 225, 213, .11);
+        1px solid rgba(145, 211, 199, .11);
 
-    border-radius: 999px;
+    border-radius:
+        999px;
 
     color:
-        rgba(226, 242, 238, .62);
+        #91aaa5;
 
     background:
-        rgba(8, 22, 28, .56);
+        rgba(3, 14, 19, .55);
 
-    font-family: var(--mono);
+    font-family:
+        var(--mono);
 
-    font-size: 9px;
+    font-size:
+        8px;
 
-    letter-spacing: .08em;
+    letter-spacing:
+        .06em;
 
-    backdrop-filter: blur(10px);
+    white-space:
+        nowrap;
 }
 
 
-/* =========================================================================
-   Shared Panels
-========================================================================= */
+.pipeline b {
+    color:
+        var(--gold);
+
+    font-size:
+        10px;
+
+    font-weight:
+        400;
+}
+
+
+/* =============================================================================
+   Main workspace: perception left, controls right
+============================================================================= */
+
+#workspace {
+    gap:
+        10px !important;
+
+    align-items:
+        stretch !important;
+}
+
+
+/* =============================================================================
+   Shared panels
+============================================================================= */
 
 .art-panel {
     position: relative;
 
     overflow: hidden;
 
-    padding: 20px !important;
-
     border:
         1px solid var(--line) !important;
 
-    border-radius: 23px !important;
+    border-radius:
+        17px !important;
 
     background:
         linear-gradient(
             145deg,
-            rgba(12, 31, 39, .86),
-            rgba(7, 17, 23, .72)
+            rgba(10, 29, 36, .91),
+            rgba(5, 16, 22, .89)
         ) !important;
 
     box-shadow:
-        0 20px 58px rgba(0, 0, 0, .23),
-        inset 0 1px rgba(255, 255, 255, .022) !important;
+        0 14px 38px rgba(0, 0, 0, .22),
+        inset 0 1px rgba(255, 255, 255, .02) !important;
 
-    backdrop-filter: blur(18px);
+    backdrop-filter:
+        blur(15px);
 }
+
 
 .art-panel::before {
     content: "";
@@ -597,511 +635,38 @@ footer {
         linear-gradient(
             90deg,
             transparent,
-            rgba(183, 255, 240, .34),
+            rgba(165, 245, 229, .30),
             transparent
         );
 }
 
-.section-kicker {
-    display: flex;
-    align-items: center;
 
-    gap: 8px;
+/* =============================================================================
+   Perception panel
+============================================================================= */
 
-    margin-bottom: 6px;
-
-    color: var(--gold);
-
-    font-family: var(--mono);
-
-    font-size: 9px;
-
-    letter-spacing: .18em;
-
-    text-transform: uppercase;
-}
-
-.section-kicker::before {
-    content: "";
-
-    width: 22px;
-    height: 1px;
-
-    background: currentColor;
-}
-
-.section-title {
-    margin:
-        0 0 5px;
-
-    color: #eef8f4;
-
-    font-family: var(--serif);
-
-    font-size:
-        clamp(24px, 3vw, 36px);
-
-    font-weight: 500;
-
-    letter-spacing: -.025em;
-}
-
-.section-copy {
-    margin:
-        0 0 14px;
-
-    color:
-        rgba(215, 235, 230, .52);
-
-    font-family: var(--serif);
-
-    font-size: 12px;
-
-    line-height: 1.7;
+#perception-panel {
+    padding:
+        13px !important;
 }
 
 
-/* =========================================================================
-   Main Camera
-========================================================================= */
-
-#camera-panel {
-    padding: 20px !important;
-}
-
-#camera-view {
-    margin-top: 11px;
-
-    border:
-        1px solid rgba(161, 226, 214, .11) !important;
-
-    border-radius: 18px !important;
-
-    background:
-        radial-gradient(
-            circle at 50% 45%,
-            rgba(70, 164, 165, .11),
-            transparent 48%
-        ),
-        rgba(3, 13, 18, .74) !important;
-
-    box-shadow:
-        inset 0 0 42px rgba(0, 0, 0, .28) !important;
-}
-
-#camera-view img {
-    border-radius: 14px !important;
-
-    object-fit: contain !important;
-
-    filter:
-        saturate(.93)
-        contrast(1.03);
-}
-
-#camera-view .image-container,
-#camera-view > div {
-    min-height: 400px;
-}
-
-
-/* =========================================================================
-   SAM3 + FlowPose Results
-========================================================================= */
-
-#perception-results {
-    gap: 14px !important;
-}
-
-.result-card {
-    padding: 17px !important;
-}
-
-.result-card .image-container {
-    min-height: 220px;
-}
-
-.result-view img {
-    border-radius: 13px !important;
-
-    object-fit: contain !important;
-}
-
-.result-caption {
-    margin-bottom: 9px;
-
-    color:
-        rgba(222, 238, 234, .67);
-
-    font-family: var(--mono);
-
-    font-size: 9px;
-
-    letter-spacing: .14em;
-}
-
-
-/* =========================================================================
-   River Divider
-========================================================================= */
-
-.river-divider {
-    position: relative;
-
-    height: 66px;
-
-    overflow: hidden;
-
-    margin:
-        4px 0;
-}
-
-.river-divider svg {
-    width: 100%;
-    height: 100%;
-}
-
-.river-main {
-    fill: none;
-
-    stroke:
-        url(#tabletRiverGradient);
-
-    stroke-width: 1.15;
-
-    stroke-dasharray:
-        9 8;
-
-    animation:
-        river-run 11s linear infinite;
-
-    filter:
-        drop-shadow(
-            0 0 7px rgba(96, 199, 192, .23)
-        );
-}
-
-.river-ghost {
-    fill: none;
-
-    stroke:
-        rgba(142, 221, 211, .065);
-
-    stroke-width: 6;
-}
-
-
-/* =========================================================================
-   Control Area
-========================================================================= */
-
-#control-panel {
-    padding: 21px !important;
-}
-
-.action-intro {
+.panel-heading {
     display: flex;
 
     align-items: flex-end;
     justify-content: space-between;
 
-    gap: 18px;
+    gap: 15px;
 
-    margin-bottom: 18px;
+    margin-bottom:
+        8px;
 }
 
-.action-note {
-    max-width: 430px;
 
-    padding:
-        11px 14px;
-
-    border-left:
-        1px solid var(--gold);
-
+.panel-kicker {
     color:
-        rgba(224, 236, 232, .51);
-
-    font-family: var(--serif);
-
-    font-size: 11px;
-
-    line-height: 1.65;
-}
-
-
-/* =========================================================================
-   Main One-touch Grasp Button
-========================================================================= */
-
-#grasp-btn {
-    position: relative;
-
-    min-height: 104px !important;
-
-    border:
-        1px solid rgba(184, 255, 239, .30) !important;
-
-    border-radius: 20px !important;
-
-    color:
-        #061719 !important;
-
-    background:
-        linear-gradient(
-            135deg,
-            #c3fff3,
-            #76d4c7 52%,
-            #58b8b3
-        ) !important;
-
-    box-shadow:
-        0 18px 45px rgba(62, 179, 166, .20),
-        inset 0 1px rgba(255, 255, 255, .55) !important;
-
-    font-size: 22px !important;
-
-    font-weight: 700 !important;
-
-    letter-spacing: .055em !important;
-
-    transition:
-        transform .22s ease,
-        box-shadow .22s ease !important;
-}
-
-#grasp-btn:hover {
-    transform:
-        translateY(-3px);
-
-    box-shadow:
-        0 24px 56px rgba(62, 179, 166, .27),
-        inset 0 1px rgba(255, 255, 255, .65) !important;
-}
-
-#grasp-btn:active {
-    transform:
-        translateY(0)
-        scale(.992);
-}
-
-#grasp-btn::after {
-    content: "";
-
-    position: absolute;
-
-    inset: -130% -30%;
-
-    transform:
-        translateX(-65%)
-        rotate(18deg);
-
-    background:
-        linear-gradient(
-            90deg,
-            transparent,
-            rgba(255, 255, 255, .30),
-            transparent
-        );
-
-    transition:
-        transform .7s ease;
-
-    pointer-events: none;
-}
-
-#grasp-btn:hover::after {
-    transform:
-        translateX(65%)
-        rotate(18deg);
-}
-
-
-/* =========================================================================
-   Perception-only Button
-========================================================================= */
-
-#perceive-btn {
-    min-height: 64px !important;
-
-    margin-top: 10px;
-
-    border:
-        1px solid rgba(145, 219, 207, .15) !important;
-
-    border-radius: 17px !important;
-
-    color:
-        rgba(210, 246, 238, .84) !important;
-
-    background:
-        rgba(17, 56, 63, .48) !important;
-
-    font-size: 15px !important;
-
-    font-weight: 600 !important;
-}
-
-
-/* =========================================================================
-   Home / Stop
-========================================================================= */
-
-#home-left-btn,
-#home-right-btn,
-#stop-btn {
-    min-height: 57px !important;
-
-    border-radius: 15px !important;
-
-    font-size: 13px !important;
-
-    font-weight: 600 !important;
-
-    transition:
-        transform .20s ease,
-        border-color .20s ease !important;
-}
-
-#home-left-btn,
-#home-right-btn {
-    border:
-        1px solid rgba(215, 179, 106, .20) !important;
-
-    color:
-        #ead9b5 !important;
-
-    background:
-        rgba(90, 68, 31, .22) !important;
-}
-
-#stop-btn {
-    border:
-        1px solid rgba(230, 133, 114, .26) !important;
-
-    color:
-        #ffd9d1 !important;
-
-    background:
-        rgba(104, 39, 34, .33) !important;
-}
-
-#home-left-btn:hover,
-#home-right-btn:hover,
-#stop-btn:hover,
-#perceive-btn:hover {
-    transform:
-        translateY(-2px);
-}
-
-
-/* =========================================================================
-   Status
-========================================================================= */
-
-.status-strip {
-    display: grid;
-
-    grid-template-columns:
-        repeat(3, 1fr);
-
-    gap: 8px;
-
-    margin-bottom: 16px;
-}
-
-.status-stage {
-    padding:
-        9px;
-
-    border:
-        1px solid rgba(154, 219, 207, .10);
-
-    border-radius: 11px;
-
-    color:
-        rgba(225, 241, 237, .56);
-
-    background:
-        rgba(4, 16, 21, .42);
-
-    font-family: var(--mono);
-
-    font-size: 8px;
-
-    text-align: center;
-
-    letter-spacing: .07em;
-}
-
-#robot-status textarea,
-#activity-status textarea {
-    border:
-        1px solid rgba(151, 214, 203, .10) !important;
-
-    border-radius: 14px !important;
-
-    color:
-        rgba(228, 242, 238, .82) !important;
-
-    background:
-        rgba(3, 13, 18, .70) !important;
-
-    font-family:
-        var(--mono) !important;
-
-    font-size: 11px !important;
-
-    line-height: 1.65 !important;
-
-    box-shadow:
-        inset 0 1px 16px rgba(0, 0, 0, .17) !important;
-}
-
-
-/* =========================================================================
-   Native Gradio
-========================================================================= */
-
-.gradio-container label,
-.gradio-container .label-wrap {
-    color:
-        rgba(225, 241, 237, .64) !important;
-
-    font-family:
-        var(--sans) !important;
-}
-
-.gradio-container button {
-    overflow: hidden;
-
-    font-family:
-        var(--sans) !important;
-}
-
-
-/* =========================================================================
-   Footer
-========================================================================= */
-
-.master-footer {
-    display: flex;
-
-    justify-content: space-between;
-
-    gap: 16px;
-
-    margin:
-        22px 3px 0;
-
-    padding-top:
-        15px;
-
-    border-top:
-        1px solid rgba(158, 221, 210, .07);
-
-    color:
-        rgba(208, 228, 223, .28);
+        var(--gold);
 
     font-family:
         var(--mono);
@@ -1110,366 +675,976 @@ footer {
         8px;
 
     letter-spacing:
-        .12em;
+        .17em;
 
     text-transform:
         uppercase;
 }
 
 
-/* =========================================================================
-   Animations
-========================================================================= */
+.panel-title {
+    margin:
+        2px 0 0;
 
-@keyframes hero-breathe {
+    color:
+        #edf7f3;
+
+    font-family:
+        var(--serif);
+
+    font-size:
+        23px;
+
+    font-weight:
+        500;
+
+    line-height:
+        1.05;
+}
+
+
+.panel-meta {
+    color:
+        #6d8984;
+
+    font-family:
+        var(--mono);
+
+    font-size:
+        8px;
+
+    letter-spacing:
+        .08em;
+
+    text-align:
+        right;
+}
+
+
+#perception-results {
+    gap:
+        9px !important;
+}
+
+
+/* individual perception card */
+
+.result-card {
+    min-width: 0 !important;
+
+    padding:
+        9px !important;
+
+    border:
+        1px solid rgba(153, 214, 203, .085) !important;
+
+    border-radius:
+        13px !important;
+
+    background:
+        rgba(2, 12, 17, .49) !important;
+}
+
+
+.result-head {
+    display: flex;
+
+    align-items: center;
+    justify-content: space-between;
+
+    margin-bottom:
+        5px;
+}
+
+
+.result-name {
+    color:
+        #e7f2ee;
+
+    font-family:
+        var(--serif);
+
+    font-size:
+        17px;
+
+    font-weight:
+        500;
+}
+
+
+.result-type {
+    color:
+        var(--jade);
+
+    font-family:
+        var(--mono);
+
+    font-size:
+        7px;
+
+    letter-spacing:
+        .12em;
+}
+
+
+.result-view {
+    border:
+        1px solid rgba(145, 211, 199, .09) !important;
+
+    border-radius:
+        11px !important;
+
+    background:
+        radial-gradient(
+            circle at 50% 44%,
+            rgba(57, 138, 160, .08),
+            transparent 48%
+        ),
+        #020b10 !important;
+
+    box-shadow:
+        inset 0 0 28px rgba(0, 0, 0, .32) !important;
+}
+
+
+.result-view img {
+    width:
+        100% !important;
+
+    height:
+        100% !important;
+
+    max-height:
+        300px !important;
+
+    border-radius:
+        9px !important;
+
+    object-fit:
+        contain !important;
+
+    filter:
+        saturate(.95)
+        contrast(1.03);
+}
+
+
+.result-view .image-container,
+.result-view > div {
+    min-height:
+        275px !important;
+
+    height:
+        275px !important;
+
+    max-height:
+        275px !important;
+}
+
+#base-targets {
+    margin-top: 4px !important;
+}
+
+#base-targets textarea {
+    color: var(--text-soft) !important;
+    background: var(--bg-0) !important;
+    font-family: var(--mono) !important;
+    font-size: 11px !important;
+    line-height: 1.5 !important;
+}
+
+
+/* =============================================================================
+   Control panel
+============================================================================= */
+
+#control-panel {
+    padding:
+        13px !important;
+
+    gap:
+        7px !important;
+}
+
+
+.control-heading {
+    margin-bottom:
+        3px;
+}
+
+
+.control-heading .panel-title {
+    font-size:
+        21px;
+}
+
+
+.flow-strip {
+    display: grid;
+
+    grid-template-columns:
+        1fr auto 1fr auto 1fr;
+
+    align-items: center;
+
+    gap:
+        5px;
+
+    margin:
+        4px 0 6px;
+
+    padding:
+        7px 8px;
+
+    border:
+        1px solid rgba(145, 211, 199, .08);
+
+    border-radius:
+        10px;
+
+    background:
+        rgba(2, 12, 17, .40);
+
+    color:
+        #79938e;
+
+    font-family:
+        var(--mono);
+
+    font-size:
+        7px;
+
+    letter-spacing:
+        .06em;
+
+    text-align:
+        center;
+}
+
+
+.flow-strip b {
+    color:
+        var(--jade);
+
+    font-size:
+        10px;
+
+    font-weight:
+        400;
+}
+
+
+/* =============================================================================
+   Main GRASP button
+============================================================================= */
+
+#grasp-btn {
+    position: relative;
+
+    min-height:
+        78px !important;
+
+    border:
+        1px solid #428f86 !important;
+
+    border-radius:
+        15px !important;
+
+    color:
+        #eafff9 !important;
+
+    background:
+        linear-gradient(
+            135deg,
+            #164b48 0%,
+            #1b615b 48%,
+            #206e66 100%
+        ) !important;
+
+    box-shadow:
+        0 12px 28px rgba(16, 98, 91, .24),
+        inset 0 1px rgba(204, 255, 244, .08) !important;
+
+    font-size:
+        19px !important;
+
+    font-weight:
+        700 !important;
+
+    letter-spacing:
+        .07em !important;
+
+    text-shadow:
+        0 1px 2px rgba(0, 0, 0, .35);
+
+    transition:
+        transform .18s ease,
+        border-color .18s ease,
+        box-shadow .18s ease !important;
+}
+
+
+#grasp-btn:hover {
+    transform:
+        translateY(-2px);
+
+    border-color:
+        #69cabe !important;
+
+    background:
+        linear-gradient(
+            135deg,
+            #18534f,
+            #20716a
+        ) !important;
+
+    box-shadow:
+        0 15px 34px rgba(30, 138, 127, .28),
+        0 0 0 1px rgba(150, 245, 229, .06) !important;
+}
+
+
+#grasp-btn:active {
+    transform:
+        translateY(0)
+        scale(.993);
+}
+
+
+#grasp-btn::after {
+    content: "";
+
+    position: absolute;
+
+    inset:
+        -140% -35%;
+
+    transform:
+        translateX(-70%)
+        rotate(18deg);
+
+    background:
+        linear-gradient(
+            90deg,
+            transparent,
+            rgba(255, 255, 255, .10),
+            transparent
+        );
+
+    transition:
+        transform .60s ease;
+
+    pointer-events:
+        none;
+}
+
+
+#grasp-btn:hover::after {
+    transform:
+        translateX(70%)
+        rotate(18deg);
+}
+
+
+/* =============================================================================
+   Voice button
+============================================================================= */
+
+#voice-btn {
+    min-height:
+        49px !important;
+
+    border:
+        1px solid #826a38 !important;
+
+    border-radius:
+        12px !important;
+
+    color:
+        #f5dfae !important;
+
+    background:
+        linear-gradient(
+            135deg,
+            #332915,
+            #49391f
+        ) !important;
+
+    font-size:
+        11px !important;
+
+    font-weight:
+        700 !important;
+
+    letter-spacing:
+        .045em !important;
+
+    box-shadow:
+        inset 0 1px rgba(255, 237, 190, .04) !important;
+}
+
+
+#voice-btn:hover {
+    transform:
+        translateY(-1px);
+
+    border-color:
+        #ba9550 !important;
+
+    background:
+        linear-gradient(
+            135deg,
+            #403219,
+            #5b4624
+        ) !important;
+}
+
+
+/* =============================================================================
+   Perception button
+============================================================================= */
+
+#perceive-btn {
+    min-height:
+        49px !important;
+
+    border:
+        1px solid #2d6575 !important;
+
+    border-radius:
+        12px !important;
+
+    color:
+        #cdebf1 !important;
+
+    background:
+        linear-gradient(
+            135deg,
+            #102d38,
+            #164351
+        ) !important;
+
+    font-size:
+        11px !important;
+
+    font-weight:
+        700 !important;
+
+    letter-spacing:
+        .04em !important;
+}
+
+
+#perceive-btn:hover {
+    transform:
+        translateY(-1px);
+
+    border-color:
+        #488fa2 !important;
+
+    background:
+        linear-gradient(
+            135deg,
+            #153744,
+            #195064
+        ) !important;
+}
+
+
+/* =============================================================================
+   Status
+============================================================================= */
+
+#status-area {
+    gap:
+        7px !important;
+}
+
+
+#robot-status,
+#activity-status {
+    min-width:
+        0 !important;
+}
+
+
+#robot-status textarea,
+#activity-status textarea {
+    min-height:
+        53px !important;
+
+    height:
+        53px !important;
+
+    padding:
+        8px 10px !important;
+
+    border:
+        1px solid rgba(145, 211, 199, .10) !important;
+
+    border-radius:
+        10px !important;
+
+    color:
+        #c4d8d3 !important;
+
+    background:
+        rgba(2, 11, 16, .72) !important;
+
+    font-family:
+        var(--mono) !important;
+
+    font-size:
+        9px !important;
+
+    line-height:
+        1.42 !important;
+
+    resize:
+        none !important;
+
+    box-shadow:
+        inset 0 1px 13px rgba(0, 0, 0, .19) !important;
+}
+
+
+/* =============================================================================
+   Home buttons
+============================================================================= */
+
+#home-left-btn,
+#home-right-btn {
+    min-height:
+        43px !important;
+
+    border:
+        1px solid #65532f !important;
+
+    border-radius:
+        11px !important;
+
+    color:
+        #dbc797 !important;
+
+    background:
+        linear-gradient(
+            135deg,
+            #272114,
+            #382e19
+        ) !important;
+
+    font-size:
+        10px !important;
+
+    font-weight:
+        700 !important;
+
+    letter-spacing:
+        .035em !important;
+}
+
+
+#home-left-btn:hover,
+#home-right-btn:hover {
+    transform:
+        translateY(-1px);
+
+    border-color:
+        #92743e !important;
+
+    background:
+        linear-gradient(
+            135deg,
+            #312817,
+            #49391f
+        ) !important;
+}
+
+
+/* =============================================================================
+   Stop button
+============================================================================= */
+
+#stop-btn {
+    min-height:
+        43px !important;
+
+    border:
+        1px solid #91483d !important;
+
+    border-radius:
+        11px !important;
+
+    color:
+        #ffd4cd !important;
+
+    background:
+        linear-gradient(
+            135deg,
+            #3b1a17,
+            #59241f
+        ) !important;
+
+    font-size:
+        10px !important;
+
+    font-weight:
+        800 !important;
+
+    letter-spacing:
+        .06em !important;
+}
+
+
+#stop-btn:hover {
+    transform:
+        translateY(-1px);
+
+    border-color:
+        #d66b59 !important;
+
+    background:
+        linear-gradient(
+            135deg,
+            #4b1e1a,
+            #702c25
+        ) !important;
+}
+
+
+/* =============================================================================
+   Small action grid
+============================================================================= */
+
+#mode-actions {
+    gap:
+        7px !important;
+}
+
+
+#home-actions {
+    gap:
+        7px !important;
+}
+
+
+/* =============================================================================
+   Gradio native tweaks
+============================================================================= */
+
+.gradio-container label,
+.gradio-container .label-wrap {
+    color:
+        #78918c !important;
+
+    font-family:
+        var(--sans) !important;
+
+    font-size:
+        9px !important;
+}
+
+
+.gradio-container button {
+    overflow:
+        hidden;
+
+    font-family:
+        var(--sans) !important;
+
+    transition:
+        transform .18s ease,
+        border-color .18s ease,
+        background .18s ease !important;
+}
+
+
+.gradio-container textarea {
+    scrollbar-width:
+        thin;
+}
+
+
+/* =============================================================================
+   Bottom signature
+============================================================================= */
+
+.compact-footer {
+    display: flex;
+
+    justify-content: space-between;
+
+    gap: 12px;
+
+    margin:
+        2px 3px 0;
+
+    color:
+        #3f5a56;
+
+    font-family:
+        var(--mono);
+
+    font-size:
+        7px;
+
+    letter-spacing:
+        .11em;
+
+    text-transform:
+        uppercase;
+}
+
+
+/* =============================================================================
+   Animation
+============================================================================= */
+
+@keyframes breathe {
     0%,
     100% {
-        transform: scale(1);
-        opacity: .7;
+        transform:
+            scale(1);
+
+        opacity:
+            .60;
     }
 
     50% {
-        transform: scale(1.06);
-        opacity: 1;
+        transform:
+            scale(1.07);
+
+        opacity:
+            1;
     }
 }
 
-@keyframes lake-drift {
-    from {
-        transform:
-            translateX(-1.2%)
-            scaleY(.95);
-    }
 
-    to {
-        transform:
-            translateX(1.2%)
-            scaleY(1.04);
-    }
-}
-
-@keyframes pulse-dot {
+@keyframes pulse {
     0%,
     100% {
-        transform: scale(.9);
-        opacity: .62;
+        transform:
+            scale(.9);
+
+        opacity:
+            .62;
     }
 
     50% {
-        transform: scale(1.16);
-        opacity: 1;
+        transform:
+            scale(1.15);
+
+        opacity:
+            1;
     }
 }
 
-@keyframes river-run {
-    to {
-        stroke-dashoffset: -140;
-    }
-}
 
-
-/* =========================================================================
-   Tablet Landscape
-========================================================================= */
+/* =============================================================================
+   Landscape tablets / smaller laptops
+============================================================================= */
 
 @media (max-width: 1100px) {
 
     .gradio-container > .main,
     .gradio-container .main {
-        padding:
-            13px 16px 28px !important;
+        width:
+            calc(100vw - 18px) !important;
     }
 
-    #tablet-hero {
-        padding:
-            26px 28px 23px;
+    .pipeline span:nth-of-type(2),
+    .pipeline span:nth-of-type(4) {
+        display:
+            none;
     }
 
-    #camera-view .image-container,
-    #camera-view > div {
-        min-height: 330px;
+    .result-view .image-container,
+    .result-view > div {
+        min-height:
+            235px !important;
+
+        height:
+            235px !important;
+
+        max-height:
+            235px !important;
+    }
+
+    .result-view img {
+        max-height:
+            235px !important;
     }
 }
 
 
-/* =========================================================================
-   Tablet Portrait
-========================================================================= */
+/* =============================================================================
+   Portrait tablet
+============================================================================= */
 
-@media (max-width: 800px) {
+@media (max-width: 820px) {
 
-    #tablet-hero {
+    body {
+        overflow-y:
+            auto;
+    }
+
+    .pipeline {
+        display:
+            none;
+    }
+
+    #compact-header {
+        min-height:
+            54px;
+
         padding:
-            24px 21px 21px;
-
-        border-radius:
-            22px;
+            9px 13px;
     }
 
-    .hero-title {
+    .brand-title {
         font-size:
-            clamp(31px, 8vw, 48px);
+            24px;
     }
 
-    .action-intro {
-        display: block;
+    #workspace {
+        flex-direction:
+            column !important;
     }
 
-    .action-note {
-        margin-top:
-            12px;
+    .result-view .image-container,
+    .result-view > div {
+        min-height:
+            205px !important;
+
+        height:
+            205px !important;
+
+        max-height:
+            205px !important;
+    }
+
+    .result-view img {
+        max-height:
+            205px !important;
     }
 
     #grasp-btn {
         min-height:
-            92px !important;
-    }
-
-    #camera-view .image-container,
-    #camera-view > div {
-        min-height:
-            290px;
-    }
-}
-
-
-/* =========================================================================
-   Phone Fallback
-========================================================================= */
-
-@media (max-width: 560px) {
-
-    .gradio-container > .main,
-    .gradio-container .main {
-        padding:
-            9px 10px 24px !important;
-    }
-
-    #tablet-hero {
-        padding:
-            22px 17px 19px;
-    }
-
-    .hero-title {
-        font-size:
-            34px;
-    }
-
-    .hero-sub {
-        font-size:
-            12px;
-    }
-
-    .art-panel {
-        padding:
-            15px !important;
-    }
-
-    .status-strip {
-        grid-template-columns:
-            1fr;
-    }
-
-    .master-footer {
-        flex-direction:
-            column;
+            65px !important;
     }
 }
 """
 
 
 # =============================================================================
-# HTML Sections
+# HTML fragments
 # =============================================================================
 
 
-TABLET_HERO_HTML = r"""
-<section id="tablet-hero">
+COMPACT_HEADER_HTML = r"""
+<section id="compact-header">
 
-    <div class="hero-topline">
-        <span class="live-dot"></span>
-        MARVINGRASP · EMBODIED AI CONTROL
+    <div class="brand-block">
+
+        <div class="brand-top">
+            <span class="live-dot"></span>
+            MARVINGRASP · EMBODIED AI CONTROL
+        </div>
+
+        <h1 class="brand-title">
+            Perception into action.
+        </h1>
+
     </div>
 
-    <h1 class="hero-title">
-        See the world.<br>
-        Then let the robot <em>reach out.</em>
-    </h1>
-
-    <p class="hero-sub">
-        Light enters through RealSense.
-        SAM3 reveals the object boundary.
-        FlowPose recovers its spatial orientation,
-        and the robot turns perception into motion.
-    </p>
-
     <div class="pipeline">
+
         <span>RGB-D</span>
+        <b>→</b>
+
         <span>SAM3</span>
-        <span>FLOWPOSE 6D</span>
-        <span>TF</span>
+        <b>→</b>
+
+        <span>FLOWPOSE</span>
+        <b>→</b>
+
         <span>MOTION</span>
+        <b>→</b>
+
         <span>GRASP</span>
+
     </div>
 
 </section>
 """
 
 
-CAMERA_HEAD_HTML = r"""
-<div class="section-kicker">
-    LIVE PERCEPTION
-</div>
+PERCEPTION_HEAD_HTML = r"""
+<div class="panel-heading">
 
-<h2 class="section-title">
-    What the robot sees
-</h2>
+    <div>
+        <div class="panel-kicker">
+            LIVE PERCEPTION
+        </div>
 
-<p class="section-copy">
-    Live vision is the entry point of the grasping pipeline.
-    Every change in the physical world begins here.
-</p>
-"""
+        <h2 class="panel-title">
+            See. Understand.
+        </h2>
+    </div>
 
-
-RESULT_HEAD_HTML = r"""
-<div class="section-kicker">
-    PERCEPTION STREAM
-</div>
-
-<h2 class="section-title">
-    From boundary to spatial pose
-</h2>
-
-<p class="section-copy">
-    SAM3 extracts the object boundary.
-    FlowPose reconstructs its 6D pose in 3D space.
-</p>
-"""
-
-
-RIVER_HTML = r"""
-<div class="river-divider" aria-hidden="true">
-
-    <svg
-        viewBox="0 0 1200 70"
-        preserveAspectRatio="none"
-    >
-
-        <defs>
-
-            <linearGradient
-                id="tabletRiverGradient"
-                x1="0"
-                x2="1"
-            >
-
-                <stop
-                    offset="0"
-                    stop-color="#83d8cb"
-                    stop-opacity="0"
-                />
-
-                <stop
-                    offset=".40"
-                    stop-color="#83d8cb"
-                />
-
-                <stop
-                    offset=".72"
-                    stop-color="#d7b36a"
-                />
-
-                <stop
-                    offset="1"
-                    stop-color="#d7b36a"
-                    stop-opacity="0"
-                />
-
-            </linearGradient>
-
-        </defs>
-
-        <path
-            class="river-ghost"
-            d="
-                M0,42
-                C180,3 320,68 470,36
-                C650,2 745,70 900,34
-                C1030,8 1115,52 1200,28
-            "
-        />
-
-        <path
-            class="river-main"
-            d="
-                M0,42
-                C180,3 320,68 470,36
-                C650,2 745,70 900,34
-                C1030,8 1115,52 1200,28
-            "
-        />
-
-    </svg>
+    <div class="panel-meta">
+        SAM3 + FLOWPOSE
+    </div>
 
 </div>
 """
 
 
 CONTROL_HEAD_HTML = r"""
-<div class="action-intro">
+<div class="control-heading">
 
-    <div>
-
-        <div class="section-kicker">
-            ONE TOUCH GRASP
-        </div>
-
-        <h2 class="section-title">
-            Turn perception into action
-        </h2>
-
-        <p class="section-copy">
-            One touch runs perception, pose estimation,
-            motion planning and robotic grasp execution.
-        </p>
-
+    <div class="panel-kicker">
+        ROBOT CONTROL
     </div>
 
-    <div class="action-note">
-        When the physical world changes,
-        the system observes it again.
-    </div>
+    <h2 class="panel-title">
+        Turn perception into action.
+    </h2>
 
 </div>
 
-<div class="status-strip">
 
-    <div class="status-stage">
+<div class="flow-strip">
+
+    <span>
         01 · SEE
-    </div>
+    </span>
 
-    <div class="status-stage">
+    <b>→</b>
+
+    <span>
         02 · UNDERSTAND
-    </div>
+    </span>
 
-    <div class="status-stage">
+    <b>→</b>
+
+    <span>
         03 · ACT
-    </div>
+    </span>
 
 </div>
 """
 
 
-FOOTER_HTML = r"""
-<div class="master-footer">
+COMPACT_FOOTER_HTML = r"""
+<div class="compact-footer">
 
     <span>
         MARVINGRASP · TABLET CONTROL
     </span>
 
     <span>
-        PERCEPTION → POSE → MOTION → GRASP
+        SAM3 → FLOWPOSE → MOTION
     </span>
 
 </div>
@@ -1477,17 +1652,22 @@ FOOTER_HTML = r"""
 
 
 # =============================================================================
-# Gradio Tablet UI
+# Gradio tablet UI
 # =============================================================================
 
 
 def create_tablet_interface(
     bridge: TabletTaskLoopBridge,
+    *,
+    voice_enabled: bool = False,
 ):
-    """Build the tablet browser interface.
+    """Build the compact single-screen tablet browser interface.
+
+    The raw RealSense frame is intentionally not displayed.
+    Only SAM3 and FlowPose visualization results are shown.
 
     This function contains only UI and browser callback bindings.
-    Perception and robot execution stay inside the existing application loop.
+    Perception and robot execution remain inside the existing application loop.
     """
 
     try:
@@ -1507,14 +1687,17 @@ def create_tablet_interface(
     )
 
     def refresh():
-        """Poll the latest bridge snapshot for browser display."""
+        """Poll latest perception and state.
+
+        Raw ``image_rgb`` is intentionally omitted from the browser output.
+        """
 
         snap = bridge.snapshot()
 
         return (
-            snap.image_rgb,
             snap.sam_rgb,
             snap.flowpose_rgb,
+            snap.base_target_text,
             snap.status,
             snap.activity,
         )
@@ -1529,193 +1712,224 @@ def create_tablet_interface(
         ):
 
             # =================================================================
-            # Hero
+            # Compact Header
             # =================================================================
 
             gr.HTML(
-                TABLET_HERO_HTML
+                COMPACT_HEADER_HTML
             )
 
             # =================================================================
-            # Live Camera
+            # Main Workspace
+            #
+            # Left  = SAM3 + FlowPose
+            # Right = robot controls
             # =================================================================
 
-            with gr.Group(
-                elem_id="camera-panel",
-                elem_classes=["art-panel"],
+            with gr.Row(
+                equal_height=True,
+                elem_id="workspace",
             ):
 
-                gr.HTML(
-                    CAMERA_HEAD_HTML
-                )
+                # =============================================================
+                # LEFT: Perception
+                # =============================================================
 
-                camera = gr.Image(
-                    label="RealSense · Live RGB",
-                    type="numpy",
-                    interactive=False,
-                    elem_id="camera-view",
-                )
-
-            # =================================================================
-            # SAM3 + FlowPose
-            # =================================================================
-
-            with gr.Group(
-                elem_classes=["art-panel"],
-            ):
-
-                gr.HTML(
-                    RESULT_HEAD_HTML
-                )
-
-                with gr.Row(
-                    equal_height=True,
-                    elem_id="perception-results",
+                with gr.Column(
+                    scale=7,
+                    min_width=520,
+                    elem_id="perception-panel",
+                    elem_classes=["art-panel"],
                 ):
 
-                    # ---------------------------------------------------------
-                    # SAM3
-                    # ---------------------------------------------------------
+                    gr.HTML(
+                        PERCEPTION_HEAD_HTML
+                    )
 
-                    with gr.Column(
-                        elem_classes=["result-card"],
+                    with gr.Row(
+                        equal_height=True,
+                        elem_id="perception-results",
                     ):
 
-                        gr.HTML(
-                            """
-                            <div class="result-caption">
-                                SAM3 · OBJECT BOUNDARY
-                            </div>
-                            """
-                        )
+                        # -----------------------------------------------------
+                        # SAM3
+                        # -----------------------------------------------------
 
-                        sam_result = gr.Image(
-                            label="SAM3 Segmentation",
-                            type="numpy",
-                            interactive=False,
-                            elem_classes=["result-view"],
-                        )
+                        with gr.Column(
+                            scale=1,
+                            elem_classes=["result-card"],
+                        ):
+
+                            gr.HTML(
+                                """
+                                <div class="result-head">
+
+                                    <span class="result-name">
+                                        SAM3
+                                    </span>
+
+                                    <span class="result-type">
+                                        OBJECT BOUNDARY
+                                    </span>
+
+                                </div>
+                                """
+                            )
+
+                            sam_result = gr.Image(
+                                label="Segmentation",
+                                type="numpy",
+                                interactive=False,
+                                show_label=False,
+                                elem_classes=["result-view"],
+                            )
+
+                        # -----------------------------------------------------
+                        # FlowPose
+                        # -----------------------------------------------------
+
+                        with gr.Column(
+                            scale=1,
+                            elem_classes=["result-card"],
+                        ):
+
+                            gr.HTML(
+                                """
+                                <div class="result-head">
+
+                                    <span class="result-name">
+                                        FlowPose
+                                    </span>
+
+                                    <span class="result-type">
+                                        6D ORIENTATION
+                                    </span>
+
+                                </div>
+                                """
+                            )
+
+                            flowpose_result = gr.Image(
+                                label="6D Pose",
+                                type="numpy",
+                                interactive=False,
+                                show_label=False,
+                                elem_classes=["result-view"],
+                            )
+
+                            base_targets = gr.Textbox(
+                                label="base_link targets",
+                                interactive=False,
+                                lines=3,
+                                max_lines=4,
+                                elem_id="base-targets",
+                            )
+
+                # =============================================================
+                # RIGHT: Control
+                # =============================================================
+
+                with gr.Column(
+                    scale=4,
+                    min_width=350,
+                    elem_id="control-panel",
+                    elem_classes=["art-panel"],
+                ):
+
+                    gr.HTML(
+                        CONTROL_HEAD_HTML
+                    )
 
                     # ---------------------------------------------------------
-                    # FlowPose
+                    # Primary operation
                     # ---------------------------------------------------------
 
-                    with gr.Column(
-                        elem_classes=["result-card"],
+                    grasp = gr.Button(
+                        "START GRASP",
+                        variant="primary",
+                        elem_id="grasp-btn",
+                    )
+
+                    # ---------------------------------------------------------
+                    # Mode controls
+                    # ---------------------------------------------------------
+
+                    with gr.Row(
+                        equal_height=True,
+                        elem_id="mode-actions",
                     ):
 
-                        gr.HTML(
-                            """
-                            <div class="result-caption">
-                                FLOWPOSE · 6D ORIENTATION
-                            </div>
-                            """
+                        perceive = gr.Button(
+                            "PERCEPTION ONLY",
+                            elem_id="perceive-btn",
                         )
 
-                        flowpose_result = gr.Image(
-                            label="FlowPose 6D Pose",
-                            type="numpy",
+                        if voice_enabled:
+                            voice = gr.Button(
+                                "VOICE GRASP · 4 S",
+                                elem_id="voice-btn",
+                            )
+
+                    # ---------------------------------------------------------
+                    # Status
+                    # ---------------------------------------------------------
+
+                    with gr.Row(
+                        equal_height=True,
+                        elem_id="status-area",
+                    ):
+
+                        status = gr.Textbox(
+                            label="ROBOT STATUS",
+                            value="Connecting to robot vision...",
                             interactive=False,
-                            elem_classes=["result-view"],
+                            lines=2,
+                            elem_id="robot-status",
+                        )
+
+                        activity = gr.Textbox(
+                            label="CURRENT ACTIVITY",
+                            value="Tablet control ready",
+                            interactive=False,
+                            lines=2,
+                            elem_id="activity-status",
+                        )
+
+                    # ---------------------------------------------------------
+                    # Safety / home
+                    # ---------------------------------------------------------
+
+                    with gr.Row(
+                        equal_height=True,
+                        elem_id="home-actions",
+                    ):
+
+                        home_left = gr.Button(
+                            "LEFT · HOME",
+                            elem_id="home-left-btn",
+                        )
+
+                        home_right = gr.Button(
+                            "RIGHT · HOME",
+                            elem_id="home-right-btn",
+                        )
+
+                        stop = gr.Button(
+                            "STOP",
+                            variant="stop",
+                            elem_id="stop-btn",
                         )
 
             # =================================================================
-            # River Transition
+            # Tiny footer
             # =================================================================
 
             gr.HTML(
-                RIVER_HTML
-            )
-
-            # =================================================================
-            # Control Area
-            # =================================================================
-
-            with gr.Group(
-                elem_id="control-panel",
-                elem_classes=["art-panel"],
-            ):
-
-                gr.HTML(
-                    CONTROL_HEAD_HTML
-                )
-
-                # -------------------------------------------------------------
-                # Main One-touch Grasp
-                # -------------------------------------------------------------
-
-                grasp = gr.Button(
-                    "START GRASP",
-                    variant="primary",
-                    size="lg",
-                    elem_id="grasp-btn",
-                )
-
-                # -------------------------------------------------------------
-                # Perception Only
-                # -------------------------------------------------------------
-
-                perceive = gr.Button(
-                    "PERCEPTION ONLY · SEE",
-                    elem_id="perceive-btn",
-                )
-
-                # -------------------------------------------------------------
-                # Robot Status
-                # -------------------------------------------------------------
-
-                with gr.Row(
-                    equal_height=True,
-                ):
-
-                    status = gr.Textbox(
-                        label="ROBOT STATUS",
-                        value="Connecting to robot vision...",
-                        interactive=False,
-                        lines=3,
-                        elem_id="robot-status",
-                    )
-
-                    activity = gr.Textbox(
-                        label="CURRENT ACTIVITY",
-                        value="Tablet control ready",
-                        interactive=False,
-                        lines=3,
-                        elem_id="activity-status",
-                    )
-
-                # -------------------------------------------------------------
-                # Secondary Controls
-                # -------------------------------------------------------------
-
-                with gr.Row():
-
-                    home_left = gr.Button(
-                        "LEFT ARM · HOME",
-                        elem_id="home-left-btn",
-                    )
-
-                    home_right = gr.Button(
-                        "RIGHT ARM · HOME",
-                        elem_id="home-right-btn",
-                    )
-
-                    stop = gr.Button(
-                        "STOP",
-                        variant="stop",
-                        elem_id="stop-btn",
-                    )
-
-            # =================================================================
-            # Footer
-            # =================================================================
-
-            gr.HTML(
-                FOOTER_HTML
+                COMPACT_FOOTER_HTML
             )
 
         # =====================================================================
-        # Browser Polling
+        # Browser polling
         # =====================================================================
 
         timer = gr.Timer(
@@ -1726,16 +1940,16 @@ def create_tablet_interface(
         timer.tick(
             refresh,
             outputs=[
-                camera,
                 sam_result,
                 flowpose_result,
+                base_targets,
                 status,
                 activity,
             ],
         )
 
         # =====================================================================
-        # Command Bindings
+        # Commands
         # =====================================================================
 
         perceive.click(
@@ -1759,6 +1973,18 @@ def create_tablet_interface(
                 activity,
             ],
         )
+
+        if voice_enabled:
+            voice.click(
+                lambda:
+                    bridge.request(
+                        TabletCommand.VOICE
+                    ),
+                outputs=[
+                    status,
+                    activity,
+                ],
+            )
 
         home_left.click(
             lambda:
@@ -1809,17 +2035,21 @@ class TabletWebService:
         bridge: TabletTaskLoopBridge,
         host: str,
         port: int,
+        voice_enabled: bool = False,
     ) -> None:
         self.bridge = bridge
         self.host = host
         self.port = int(port)
+        self.voice_enabled = bool(voice_enabled)
+
         self.demo = None
 
     def start(self) -> None:
         """Start the tablet web server."""
 
         self.demo = create_tablet_interface(
-            self.bridge
+            self.bridge,
+            voice_enabled=self.voice_enabled,
         )
 
         self.demo.queue(

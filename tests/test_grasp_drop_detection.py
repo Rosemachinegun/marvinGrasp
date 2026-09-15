@@ -1,6 +1,6 @@
 from argparse import Namespace
 
-from grasp_core.tasks.grasp_drop_detection import (
+from grasp_core.execution.drop_monitor import (
     GraspDropMonitor,
     feedback_position,
 )
@@ -22,7 +22,7 @@ def test_feedback_position_parses_receiver_reply() -> None:
 def test_monitor_trips_only_after_closing_more_than_target(monkeypatch) -> None:
     samples = iter(("feedback pos=470", "feedback pos=469"))
     monkeypatch.setattr(
-        "grasp_core.tasks.grasp_drop_detection.send_gripper_signal",
+        "grasp_core.execution.drop_monitor.send_gripper_signal",
         lambda *args, **kwargs: next(samples),
     )
     publisher = FakePublisher()
