@@ -1,4 +1,4 @@
-from grasp_core.tasks.ribbon_policy import (
+from grasp_core.planning.grasp.policies.ribbon import (
     assume_grasp_success,
     is_ribbon_object,
     skip_grasp_drop_detection,

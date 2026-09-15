@@ -2,20 +2,20 @@ from argparse import Namespace
 
 import numpy as np
 
-from grasp_core.core.pose_math import (
+from grasp_core.core.math.pose import (
     ik_wrist_orientation_quat,
     quaternion_angle_rad,
     quaternion_to_rotation_matrix,
     rotation_matrix_from_zyx_euler_deg,
 )
-from grasp_core.core.robot_target_pose import matrix_to_quaternion
-from grasp_core.tasks.put import (
+from grasp_core.core.types.robot_target_pose import matrix_to_quaternion
+from grasp_core.execution.skills.place import (
     cubic_bezier_position,
-    execute_fixed_put_after_grasp,
-    fixed_put_xyz_for_hand,
-    humanlike_put_waypoints,
+    execute_fixed_place_after_grasp as execute_fixed_put_after_grasp,
+    fixed_place_xyz_for_hand as fixed_put_xyz_for_hand,
+    humanlike_place_waypoints as humanlike_put_waypoints,
     position_for_home,
-    put_orientation_for_hand,
+    place_orientation_for_hand as put_orientation_for_hand,
     smooth_bezier_arc_waypoints,
 )
 
@@ -162,8 +162,8 @@ def test_put_orientation_restores_both_z_and_y_tilts_to_neutral() -> None:
 
 def test_put_orientation_angles_are_independently_configurable() -> None:
     args = put_args()
-    args.put_tilt_z_left_deg = 12.0
-    args.put_tilt_y_left_deg = -7.0
+    args.place_tilt_z_left_deg = 12.0
+    args.place_tilt_y_left_deg = -7.0
 
     actual = quaternion_to_rotation_matrix(put_orientation_for_hand(args, "left"))
     expected = rotation_matrix_from_zyx_euler_deg(
@@ -224,25 +224,25 @@ def test_keep_put_pose_true_skips_home(monkeypatch) -> None:
         (np.array([0.30, -0.20, 0.85]), (0.0, 0.0, 0.0, 1.0)),
     )
     calls = {"home": 0}
-    monkeypatch.setattr("grasp_core.tasks.put.publish_request_ik_path", lambda *a, **k: 1)
-    monkeypatch.setattr("grasp_core.tasks.put.send_gripper_signal", lambda *a, **k: "release ok")
+    monkeypatch.setattr("grasp_core.execution.skills.place.publish_path", lambda *a, **k: 1)
+    monkeypatch.setattr("grasp_core.execution.skills.place.send_gripper_signal", lambda *a, **k: "release ok")
 
     def fake_home(*args, **kwargs):
         calls["home"] += 1
         return "home ok"
 
-    monkeypatch.setattr("grasp_core.tasks.put.publish_home_request_ik_target", fake_home)
+    monkeypatch.setattr("grasp_core.execution.skills.place.publish_home", fake_home)
 
     result = execute_fixed_put_after_grasp(
         publisher,
         "right",
         put_args(),
         grasp_confirmed=True,
-        keep_put_pose=True,
+        keep_place_pose=True,
     )
 
     assert result.ok
-    assert "kept at put pose" in result.status
+    assert "kept at place pose" in result.status
     assert calls["home"] == 0
 
 
@@ -251,21 +251,21 @@ def test_keep_put_pose_false_returns_home(monkeypatch) -> None:
         (np.array([0.30, -0.20, 0.85]), (0.0, 0.0, 0.0, 1.0)),
     )
     calls = {"home": 0}
-    monkeypatch.setattr("grasp_core.tasks.put.publish_request_ik_path", lambda *a, **k: 1)
-    monkeypatch.setattr("grasp_core.tasks.put.send_gripper_signal", lambda *a, **k: "release ok")
+    monkeypatch.setattr("grasp_core.execution.skills.place.publish_path", lambda *a, **k: 1)
+    monkeypatch.setattr("grasp_core.execution.skills.place.send_gripper_signal", lambda *a, **k: "release ok")
 
     def fake_home(*args, **kwargs):
         calls["home"] += 1
         return "home ok"
 
-    monkeypatch.setattr("grasp_core.tasks.put.publish_home_request_ik_target", fake_home)
+    monkeypatch.setattr("grasp_core.execution.skills.place.publish_home", fake_home)
 
     result = execute_fixed_put_after_grasp(
         publisher,
         "right",
         put_args(),
         grasp_confirmed=True,
-        keep_put_pose=False,
+        keep_place_pose=False,
     )
 
     assert result.ok
@@ -276,12 +276,12 @@ def test_keep_put_pose_false_returns_home(monkeypatch) -> None:
 def put_args() -> Namespace:
     return Namespace(
         home_safe_z_m=0.95,
-        put_target_hold_sec=0.0,
-        put_home_hold_sec=0.0,
-        put_tilt_z_left_deg=0.0,
-        put_tilt_z_right_deg=0.0,
-        put_tilt_y_left_deg=0.0,
-        put_tilt_y_right_deg=0.0,
+        place_target_hold_sec=0.0,
+        place_home_hold_sec=0.0,
+        place_tilt_z_left_deg=0.0,
+        place_tilt_z_right_deg=0.0,
+        place_tilt_y_left_deg=0.0,
+        place_tilt_y_right_deg=0.0,
         left_home_xyz=(0.25, 0.25, 0.81),
         right_home_xyz=(0.25, -0.25, 0.81),
         ik_orientation_quat=(0.0, 0.0, 0.0, 1.0),

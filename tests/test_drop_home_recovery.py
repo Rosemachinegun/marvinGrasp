@@ -7,9 +7,9 @@ import threading
 import numpy as np
 import pytest
 
-from grasp_core.apps.flowpose_request_ik_app import GraspDemoApp, RuntimeState
-from grasp_core.communication.request_ik_publisher import RequestIkTargetPublisher
-from grasp_core.tasks import robot_actions
+from grasp_core.tools.flowpose_request_ik_app import GraspDemoApp, RuntimeState
+from grasp_core.execution.motion_executor import RequestIkTargetPublisher
+from grasp_core.execution import robot_skill_service as robot_actions
 
 
 class QueuedExecutor:
@@ -41,7 +41,7 @@ def app_for_drop(monkeypatch):
     )
     service.send_gripper = Mock(return_value="OK release")
     publish = Mock(return_value="home complete")
-    monkeypatch.setattr(robot_actions, "publish_home_request_ik_target", publish)
+    monkeypatch.setattr("grasp_core.execution.skills.home.publish_home", publish)
     app = GraspDemoApp.__new__(GraspDemoApp)
     app.args = args
     app.state = RuntimeState()

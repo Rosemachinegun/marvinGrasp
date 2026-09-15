@@ -2,7 +2,9 @@ from argparse import Namespace
 
 import pytest
 
-from daimon_stuff import grip_signal_receiver
+from daimon_gripper import grip_signal_receiver
+from daimon_gripper import grip_signal_device
+from daimon_gripper import grip_signal_runner
 
 
 class FakeGrip:
@@ -106,20 +108,19 @@ def test_stall_well_above_min_limit_is_contact_success() -> None:
 def test_release_warns_when_known_calibration_position_is_far(monkeypatch, capsys) -> None:
     grip = FakeGrip(positions=[219])
     monkeypatch.setattr(
-        grip_signal_receiver,
+        grip_signal_device,
         "init_known_gripper",
         lambda args, command: grip,
     )
 
-    result = grip_signal_receiver.run_release(
-        Namespace(
-            release_target=1000,
-            release_speed=60,
-            release_torque=20,
-            release_wait=0.0,
-            target_pos_tolerance=120,
-        )
+    args = Namespace(
+        release_target=1000,
+        release_speed=60,
+        release_torque=20,
+        release_wait=0.0,
+        target_pos_tolerance=120,
     )
+    result = grip_signal_receiver.GripperRunner(args).release()
 
     assert result == 0
     assert grip.commands == [("move_to_pos", 1000)]
@@ -138,12 +139,12 @@ def test_cached_gripper_starts_grip_without_reinitializing_or_closing(monkeypatc
         grip_done_wait=0.0,
     )
     monkeypatch.setattr(
-        grip_signal_receiver,
+        grip_signal_device,
         "init_known_gripper",
         lambda *_args, **_kwargs: pytest.fail("cached grip must not reinitialize"),
     )
     monkeypatch.setattr(
-        grip_signal_receiver,
+        grip_signal_runner,
         "finish_grasp",
         lambda *_args, **_kwargs: None,
     )

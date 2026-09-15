@@ -1,0 +1,87 @@
+<?xml version="1.0"?>
+<robot name="marvin_robot" xmlns:xacro="http://ros.org/wiki/xacro">
+ <xacro:macro  name="stand">
+  <!-- Define mesh path as a Xacro property -->
+  <!-- base Link -->
+    <!-- <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="0.0081994 -5.1239E-06 0.47835"
+        rpy="0 0 0" />
+      <mass
+        value="18.846" />
+      <inertia
+        ixx="0.46346"
+        ixy="7.6311E-07"
+        ixz="-0.00053819"
+        iyy="0.46325"
+        iyz="3.466E-06"
+        izz="0.37766" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://marvin_description/meshes/base/ZJ_Robot_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.8 0.8 0.8 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://marvin_description/meshes/base/ZJ_Robot_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+
+  <link name="tracking_base_link"/>
+  <joint name="base_to_tracking_base" type="fixed">
+    <parent link="base_link"/>
+    <child link="tracking_base_link"/>
+    <origin xyz="0 0 -0.1" rpy="0 0 0"/>
+  </joint> -->
+  <link name="camera_rgb_link"/>
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_rgb_link"/>
+    <origin rpy="-2.535527 -0.157327 -1.705899" xyz="0.195155 0.18463 1.305996"/>
+  </joint>
+
+  <!-- <link name="camera_left_link"/>
+  <joint name="camera_jointL" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_left_link"/>
+    <origin rpy="-2.3562 0.0 -1.5708" xyz="0.06459 -0.03 1.2516"/>
+  </joint>
+
+  <link name="camera_right_link"/>
+  <joint name="camera_jointR" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_right_link"/>
+    <origin rpy="-2.362680 -0.011574 -1.569458" xyz="0.056445 0.033731 1.257175"/>
+  </joint> -->
+  
+</xacro:macro>
+</robot>
+
+
+<!-- 
+xyz: 0.176827 0.167191 1.287796
+rpy: -2.525812 -0.156600 -1.705477 -->
+<!--origin rpy="-2.362680 -0.011574 -1.569458" xyz="0.036445 0.033731 1.257175"/-->
+
+<!-- xyz: 0.036445 0.033731 1.257175
+rpy: -2.362680 -0.011574 -1.569458 -->
+
+<!-- <origin rpy="-2.535527 -0.157327 -1.705899"
+        xyz="0.225155 0.222463 1.305996"/> -->

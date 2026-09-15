@@ -55,7 +55,7 @@ Daimon Gripper
      ├── Drop detection
      └── Failure recovery
 ```
-![System Architecture](frame.png)
+
 整个系统不是简单地将视觉模型输出直接发送给 IK。
 
 在 **Perception → Robot Execution** 之间增加了一层抓取策略与姿态规范化，使视觉模型给出的“几何上正确姿态”进一步转换成“机械臂真正适合执行的姿态”。
@@ -164,7 +164,8 @@ Camera-frame 3D Geometry
 base_link Object Pose
 ```
 
-`FlowPose/` 保存 FlowPose 相关代码与模型接口。
+`perception/` 保存 FlowPose、SAM3 及相关模型资源；`grasp_core/perception/`
+保存对应的运行时封装。
 
 > 模型权重及大型训练数据不包含在 Git 仓库中，需要单独配置。
 
@@ -220,9 +221,8 @@ IK
 抓取姿态策略主要位于：
 
 ```text
-grasp_core/planning/
-grasp_core/policyhere/
-grasp_core/tasks/
+grasp_core/planning/grasp/
+grasp_core/execution/
 ```
 
 不同几何类型使用不同的 normalization policy。
@@ -350,7 +350,7 @@ Retreat
 对象级 waypoint 和抓取参数主要通过：
 
 ```text
-config/tool.yaml
+grasp_core/resources/tool.yaml
 ```
 
 管理。
@@ -373,7 +373,7 @@ config/tool.yaml
 运动相关实现位于：
 
 ```text
-grasp_core/motion/
+grasp_core/planning/trajectory/
 ```
 
 MarvinGrasp 不希望机械臂简单地：
@@ -430,10 +430,8 @@ grasp_core/communication/
 
 负责：
 
-- ROS2 target publishing
-- request IK
-- Cartesian trajectory publishing
-- gripper command communication
+- 将 execution 生成的 ROS2 target 和 Cartesian 轨迹点下发
+- 夹爪设备通信
 
 主要执行链路：
 
@@ -441,19 +439,18 @@ grasp_core/communication/
 flowpose_request_ik_tester.py
         │
         ▼
-grasp_core/apps/
+grasp_core/tools/
 flowpose_request_ik_app.py
         │
         ▼
-grasp_core/tasks/
-robot_actions.py
+grasp_core/execution/
+robot_skill_service.py
         │
         ▼
-grasp_core/tasks/
-grasp_request_ik.py
+grasp_core/execution/
+skill_grasp.py
         │
-        ├── planning/
-        ├── motion/
+        ├── action/
         └── communication/
 ```
 
@@ -461,10 +458,10 @@ grasp_request_ik.py
 
 # Daimon Gripper
 
-`daimon_stuff/` 包含 Daimon 末端设备相关功能。
+`daimon_gripper/` 包含 Daimon 末端设备相关功能。
 
 ```text
-daimon_stuff/
+daimon_gripper/
 │
 ├── dm_gripper_py/
 │   └── gripper SDK / position control
@@ -588,17 +585,16 @@ Continue  Stop Motion
 ```text
 marvinGrasp/
 │
-├── FlowPose/
-│   └── 6D pose estimation
+├── perception/
+│   ├── flowpose/
+│   ├── sam3/
+│   └── models/
 │
 ├── config/
-│   ├── tool.yaml
+│   ├── resources/tool.yaml
 │   └── robot / camera configuration
 │
 ├── grasp_core/
-│   │
-│   ├── apps/
-│   │   └── application entry / main loop
 │   │
 │   ├── perception/
 │   │   └── RealSense / SAM3 / FlowPose
@@ -607,24 +603,19 @@ marvinGrasp/
 │   │   └── pose / transform / quaternion utilities
 │   │
 │   ├── planning/
-│   │   └── grasp target and waypoint planning
-│   │
-│   ├── policyhere/
-│   │   └── object-specific pose policies
-│   │
-│   ├── motion/
-│   │   └── trajectory interpolation
+│   │   ├── grasp/
+│   │   └── trajectory/
 │   │
 │   ├── communication/
 │   │   └── ROS2 / IK / gripper communication
 │   │
-│   ├── tasks/
+│   ├── execution/
 │   │   └── grasp / put / home / recovery
 │   │
-│   └── ui/
-│       └── runtime dashboard
+│   └── tools/
+│       └── application entry, dashboard and diagnostics
 │
-├── daimon_stuff/
+├── daimon_gripper/
 │   ├── dm_gripper_py/
 │   ├── dm_gripper_cam_py/
 │   └── dm_gripper_tac_py/
@@ -654,10 +645,13 @@ Daimon Gripper
 Recommended Python environment:
 
 ```bash
+conda env create -f environment-flowpose.yml
 conda activate flowpose
 ```
 
-Exact model dependencies may depend on the local FlowPose / SAM3 deployment.
+The exported project environment is kept in `environment-flowpose.yml`.
+ROS2 Humble is provided by the system installation and should be sourced before
+running ROS-dependent entrypoints.
 
 ---
 
@@ -683,7 +677,7 @@ git checkout failloop
 Main robot grasp configuration:
 
 ```text
-config/tool.yaml
+grasp_core/resources/tool.yaml
 ```
 
 Before running on a real robot, verify:
@@ -698,26 +692,31 @@ Before running on a real robot, verify:
 
 ---
 
-## 3. Daimon Gripper Dependencies
+## 3. Prepare Runtime Environment
 
 ```bash
-cd daimon_stuff
-python -m pip install -r requirement.txt
+conda activate flowpose
+source /opt/ros/humble/setup.bash
+export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 ```
 
-Install the gripper SDK:
+If the `flowpose` environment already exists, update it with:
 
 ```bash
-cd dm_gripper_py
+conda env update -n flowpose -f environment-flowpose.yml
+```
+
+The Daimon gripper SDK is private/local. Install it into the active `flowpose`
+environment from the Daimon SDK source when available:
+
+```bash
+cd daimon_gripper/dm_gripper_py
 python -m pip install .
 ```
 
-Optional tactile module:
-
-```bash
-cd ../dm_gripper_tac_py
-python -m pip install .
-```
+If `daimon_gripper/dm_gripper_py` is empty, restore the Daimon SDK source first.
+On this machine the SDK was also available from the base Conda installation and
+was copied into `flowpose` for runtime compatibility.
 
 ---
 
@@ -726,7 +725,7 @@ python -m pip install .
 From the repository root:
 
 ```bash
-python flowpose_request_ik_tester.py
+./scripts/run_flowpose_request_ik_tester.sh
 ```
 
 The runtime application coordinates:
@@ -796,21 +795,19 @@ grasp_core/perception/
 ### Add a new grasp / put / recovery task
 
 ```text
-grasp_core/tasks/
+grasp_core/execution/
 ```
 
 ### Add an object-specific grasp strategy
 
 ```text
-grasp_core/planning/
-or
-grasp_core/policyhere/
+grasp_core/planning/grasp/
 ```
 
 ### Add trajectory algorithms
 
 ```text
-grasp_core/motion/
+grasp_core/planning/trajectory/
 ```
 
 ### Add ROS / device communication

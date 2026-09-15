@@ -20,7 +20,7 @@ import numpy as np
 from PIL import Image
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SERIAL = "419622073235"
+DEFAULT_SERIAL = "406122070773"
 DEFAULT_PROMPTS = "pen"
 DEFAULT_SCORE_THRESHOLD = 0.25
 DEFAULT_DEDUP_IOU_THRESHOLD = 0.4
@@ -65,8 +65,8 @@ def resolve_checkpoint_path(path: str) -> Path:
     candidates = [requested]
     if not requested.is_absolute():
         candidates.append(PROJECT_ROOT / requested)
-    if path == "/model/sam3.pt":
-        candidates.append(PROJECT_ROOT / "model" / "sam3.pt")
+    if path in {"/model/sam3.pt", "/perception/models/sam3.pt"}:
+        candidates.append(PROJECT_ROOT / "perception" / "models" / "sam3.pt")
 
     for candidate in candidates:
         if candidate.exists():
@@ -85,7 +85,7 @@ def maybe_add_sam3_source(sam3_root: str | None) -> None:
         candidates.append(Path(os.environ["SAM3_ROOT"]).expanduser())
     candidates.extend(
         [
-            PROJECT_ROOT / "sam3",
+            PROJECT_ROOT / "perception" / "sam3",
             Path("/home/kewei/repo/sam3"),
             Path("/home/kewei/anygrasp/auto_app-main/Sam3Docker/sam3-main"),
             Path("/home/kewei/TJFusion/Sam3Docker/sam3"),
@@ -721,7 +721,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--checkpoint-path", default="/model/sam3.pt")
+    parser.add_argument(
+        "--checkpoint-path",
+        default=str(PROJECT_ROOT / "perception" / "models" / "sam3.pt"),
+    )
     parser.add_argument("--sam3-root", default=None)
     parser.add_argument("--prompts", default=DEFAULT_PROMPTS)
     parser.add_argument(

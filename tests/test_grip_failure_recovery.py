@@ -4,18 +4,18 @@ from concurrent.futures import Future
 import numpy as np
 import pytest
 
-from grasp_core.apps.flowpose_request_ik_app import GraspDemoApp, RetryStage
-from grasp_core.tasks.grasp_request_ik import GripFailedMinLimit, execute_grip_at_pose
-from grasp_core.core.robot_target_pose import TargetObjectPose
+from grasp_core.tools.flowpose_request_ik_app import GraspDemoApp, RetryStage
+from grasp_core.execution.skills.grasp import GripFailedMinLimit, execute_grip_at_pose
+from grasp_core.core.types.robot_target_pose import TargetObjectPose
 
 
 def test_grasp_path_artifacts_are_not_saved_before_template_grip() -> None:
     """Diagnostics must stay out of the target-arrival -> close critical path."""
     import inspect
-    from grasp_core.tasks import grasp_request_ik
+    from grasp_core.execution.skills import grasp as skill_grasp
 
-    source = inspect.getsource(grasp_request_ik.publish_latest_request_ik_target)
-    callback_index = source.index("count += grip_callbacks[grip_waypoint_index]")
+    source = inspect.getsource(skill_grasp.execute_grasp)
+    callback_index = source.index("count += execute_grip_at_pose(")
     final_artifact_index = source.index(
         "grasp_path_artifacts or save_request_ik_grasp_path_artifacts"
     )
@@ -42,13 +42,27 @@ class FakeRobotActions:
     def __init__(self) -> None:
         self.calls = []
 
-    def publish_failure_recovery(self, hand: str) -> str:
+    def publish_failure_recovery(self, hand: str, **kwargs) -> str:
         self.calls.append(("recovery", hand))
         return f"{hand} recovery ok"
 
     def send_gripper(self, command: str, hand: str | None = None) -> str:
         self.calls.append((command, hand))
         return f"{hand} {command} ok"
+
+
+class FakeIkPublisher:
+    def __init__(self) -> None:
+        self.generation = 0
+        self.stopped = False
+
+    def request_stop(self) -> int:
+        self.generation += 1
+        self.stopped = True
+        return self.generation
+
+    def stop_generation(self) -> int:
+        return self.generation
 
 
 def test_left_grip_failure_returns_home_even_when_retry_loop_disabled() -> None:
@@ -60,6 +74,7 @@ def test_left_grip_failure_returns_home_even_when_retry_loop_disabled() -> None:
     )
     app.state = app_state()
     app.robot_actions = FakeRobotActions()
+    app.ik_publisher = FakeIkPublisher()
     app.action_executor = ImmediateExecutor()
 
     app.start_grip_failure_recovery(
@@ -69,8 +84,8 @@ def test_left_grip_failure_returns_home_even_when_retry_loop_disabled() -> None:
 
     assert app.state.retry_stage is RetryStage.RECOVERY
     assert app.state.retry_will_regrasp is False
-    assert app.robot_actions.calls == [("recovery", "left"), ("release", "left")]
-    assert "moving left to recovery" in app.state.status
+    assert app.robot_actions.calls == [("release", "left"), ("recovery", "left")]
+    assert "releasing left" in app.state.status
     assert "retry loop disabled" in app.state.status
 
 
@@ -83,6 +98,7 @@ def test_manual_right_grip_failure_returns_home() -> None:
     )
     app.state = app_state()
     app.robot_actions = FakeRobotActions()
+    app.ik_publisher = FakeIkPublisher()
     app.action_executor = ImmediateExecutor()
     app.gripper_future = Future()
     app.gripper_future.set_result(
@@ -97,20 +113,21 @@ def test_manual_right_grip_failure_returns_home() -> None:
     assert app.state.retry_stage is RetryStage.RECOVERY
     assert app.state.grasp_confirmed is False
     assert app.state.last_gripper_hand == "right"
-    assert app.robot_actions.calls == [("recovery", "right"), ("release", "right")]
-    assert "moving right to recovery" in app.state.status
+    assert app.robot_actions.calls == [("release", "right"), ("recovery", "right")]
+    assert "releasing right" in app.state.status
 
 
 def test_failure_recovery_continues_with_fresh_grasp_pipeline() -> None:
     app = GraspDemoApp.__new__(GraspDemoApp)
     app.args = Namespace(
         ik_hand="auto",
-        continuous_grasp_after_put=True,
+        continuous_grasp_after_place=True,
         grip_retry_loop=True,
         grip_retry_max_attempts=3,
     )
     app.state = app_state()
     app.robot_actions = FakeRobotActions()
+    app.ik_publisher = FakeIkPublisher()
     app.action_executor = ImmediateExecutor()
     submitted = []
     app.submit_sam3 = lambda bundle, retry=False: submitted.append((bundle, retry))
@@ -127,16 +144,17 @@ def test_failure_recovery_continues_with_fresh_grasp_pipeline() -> None:
     assert submitted == [(frame, True)]
 
 
-def test_shared_continuous_switch_disables_failure_regrasp() -> None:
+def test_continuous_place_switch_does_not_limit_failure_regrasp() -> None:
     app = GraspDemoApp.__new__(GraspDemoApp)
     app.args = Namespace(
         ik_hand="auto",
-        continuous_grasp_after_put=False,
+        continuous_grasp_after_place=False,
         grip_retry_loop=True,
         grip_retry_max_attempts=3,
     )
     app.state = app_state()
     app.robot_actions = FakeRobotActions()
+    app.ik_publisher = FakeIkPublisher()
     app.action_executor = ImmediateExecutor()
 
     app.start_grip_failure_recovery(
@@ -144,20 +162,19 @@ def test_shared_continuous_switch_disables_failure_regrasp() -> None:
         failed_hand="left",
     )
 
-    assert app.state.retry_will_regrasp is False
+    # Failed grasps retry indefinitely; only the explicit retry-loop switch
+    # disables the recovery loop.
+    assert app.state.retry_will_regrasp is True
 
 
 def app_state():
-    from grasp_core.apps.flowpose_request_ik_app import RuntimeState
+    from grasp_core.tools.flowpose_request_ik_app import RuntimeState
 
     return RuntimeState()
 
 
 class FakePublisher:
     publish_rate_hz = 100.0
-
-    def uses_trajectory_command(self, hand: str) -> bool:
-        return False
 
     def hold_target(self, hand, position, orientation, duration_sec):
         return 1
@@ -167,13 +184,13 @@ def test_grip_failed_min_limit_alias_raises_without_confirming(monkeypatch) -> N
     confirmed = []
     args = Namespace(grip_settle_sec=0.0, grip_post_confirm_hold_sec=0.0)
     monkeypatch.setattr(
-        "grasp_core.tasks.grasp_request_ik.gripper_receiver_args",
+        "grasp_core.execution.skills.grasp.gripper_receiver_args",
         lambda args, hand: [
             ("left", Namespace(grip_signal_port=55551, gripper_server="mock"))
         ],
     )
     monkeypatch.setattr(
-        "grasp_core.tasks.grasp_request_ik.send_gripper_signal",
+        "grasp_core.execution.skills.grasp.send_gripper_signal",
         lambda command, args, hand: "OK GRIP_FAILED_MIN_LIMIT grip done exit_code=2",
     )
 
@@ -194,13 +211,13 @@ def test_ribbon_accepts_min_limit_as_success(monkeypatch) -> None:
     confirmed = []
     args = Namespace(grip_settle_sec=0.0, grip_post_confirm_hold_sec=0.0)
     monkeypatch.setattr(
-        "grasp_core.tasks.grasp_request_ik.gripper_receiver_args",
+        "grasp_core.execution.skills.grasp.gripper_receiver_args",
         lambda args, hand: [
             ("left", Namespace(grip_signal_port=55551, gripper_server="mock"))
         ],
     )
     monkeypatch.setattr(
-        "grasp_core.tasks.grasp_request_ik.send_gripper_signal",
+        "grasp_core.execution.skills.grasp.send_gripper_signal",
         lambda command, args, hand: "OK GRIP_FAILED_MIN_LIMIT grip done exit_code=2",
     )
 
@@ -233,7 +250,7 @@ def test_manual_ribbon_grip_skips_failure_recovery() -> None:
     )
     app.gripper_future_command = "grip"
     app.gripper_future_hand = "left"
-    app.auto_put_after_confirmed_grasp = lambda: None
+    app.auto_place_after_confirmed_grasp = lambda: None
     app.start_grip_failure_recovery = lambda *args, **kwargs: pytest.fail(
         "ribbon must not enter failure recovery"
     )
@@ -243,3 +260,30 @@ def test_manual_ribbon_grip_skips_failure_recovery() -> None:
     assert app.state.grasp_confirmed
     assert app.state.grasp_confirmed_hand == "left"
     assert app.state.grasp_confirmed_label == "ribbon_1"
+
+
+def test_manual_gripper_only_result_does_not_trigger_followup() -> None:
+    app = GraspDemoApp.__new__(GraspDemoApp)
+    app.state = app_state()
+    app.state.grasp_confirmed = True
+    app.state.grasp_confirmed_hand = "right"
+    app.gripper_future = Future()
+    app.gripper_future.set_result(
+        "OK GRASP_FAILED_MIN_LIMIT grip done exit_code=2 hand=right"
+    )
+    app.gripper_future_command = "grip"
+    app.gripper_future_hand = "right"
+    app.gripper_future_followup = False
+    app.gripper_interrupted = False
+    app.auto_place_after_confirmed_grasp = lambda: pytest.fail(
+        "manual gripper control must not trigger place"
+    )
+    app.start_grip_failure_recovery = lambda *args, **kwargs: pytest.fail(
+        "manual gripper control must not trigger recovery"
+    )
+
+    app._collect_gripper_result()
+
+    assert app.gripper_future is None
+    assert app.state.grasp_confirmed
+    assert app.state.grasp_confirmed_hand == "right"

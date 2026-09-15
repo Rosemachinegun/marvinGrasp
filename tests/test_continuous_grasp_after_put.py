@@ -6,7 +6,7 @@ import numpy as np
 
 import pytest
 
-from grasp_core.apps.flowpose_request_ik_app import GraspDemoApp, RuntimeState
+from grasp_core.tools.flowpose_request_ik_app import GraspDemoApp, RuntimeState
 
 
 @pytest.mark.parametrize("continuous", [True, False])

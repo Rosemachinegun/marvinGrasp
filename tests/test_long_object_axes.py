@@ -4,13 +4,13 @@ from itertools import permutations
 import numpy as np
 import pytest
 
-from grasp_core.core.long_object_axes import canonical_long_object_pose
-from grasp_core.core.robot_target_pose import make_target_object_pose, rpy_to_matrix
+from grasp_core.core.math.object_axes import canonical_long_object_pose
+from grasp_core.core.types.robot_target_pose import make_target_object_pose, rpy_to_matrix
 from grasp_core.perception.flowpose_pipeline import (
     FlowPoseObject,
     apply_long_object_axes_to_flowpose_output,
 )
-from grasp_core.tasks.screwdriver_handle_grasp_policy import (
+from grasp_core.planning.grasp.policies.long_object import (
     make_screwdriver_handle_gripper_pose,
 )
 

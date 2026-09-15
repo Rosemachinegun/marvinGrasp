@@ -2,8 +2,8 @@ from argparse import Namespace
 
 import numpy as np
 
-from grasp_core.tasks import robot_actions
-from grasp_core.core.robot_target_pose import TargetObjectPose
+from grasp_core.execution import robot_skill_service as robot_actions
+from grasp_core.core.types.robot_target_pose import TargetObjectPose
 
 
 class FakePutResult:
@@ -14,7 +14,7 @@ class FakePutResult:
 def test_ribbon_grasp_min_limit_is_accepted_as_success(monkeypatch) -> None:
     monkeypatch.setattr(
         robot_actions,
-        "publish_latest_request_ik_target",
+        "execute_grasp",
         lambda *args: "GRIP_FAILED_MIN_LIMIT hand=right",
     )
     service = robot_actions.RobotActionService(
@@ -50,16 +50,16 @@ def test_ribbon_put_skips_grasp_drop_detection(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         robot_actions,
-        "execute_fixed_put_after_grasp",
+        "execute_fixed_place_after_grasp",
         lambda *args, **kwargs: FakePutResult(),
     )
     service = robot_actions.RobotActionService(
-        args=Namespace(ik_hand="right", grip_drop_detection=True, put_keep_pose=True),
+        args=Namespace(ik_hand="right", grip_drop_detection=True, place_keep_pose=True),
         ik_publisher=object(),
         pick_templates={},
     )
 
-    result = service.publish_put(
+    result = service.publish_place(
         grasp_confirmed=True,
         hand="right",
         object_label="Yellow_Ribbon_1",
@@ -80,16 +80,16 @@ def test_non_ribbon_put_still_reads_drop_detection_baseline(monkeypatch) -> None
     monkeypatch.setattr(robot_actions, "read_grasp_baseline", read_baseline)
     monkeypatch.setattr(
         robot_actions,
-        "execute_fixed_put_after_grasp",
+        "execute_fixed_place_after_grasp",
         lambda *args, **kwargs: FakePutResult(),
     )
     service = robot_actions.RobotActionService(
-        args=Namespace(ik_hand="right", grip_drop_detection=True, put_keep_pose=True),
+        args=Namespace(ik_hand="right", grip_drop_detection=True, place_keep_pose=True),
         ik_publisher=object(),
         pick_templates={},
     )
 
-    service.publish_put(
+    service.publish_place(
         grasp_confirmed=True,
         hand="right",
         object_label="toy",

@@ -414,15 +414,16 @@ sam3.pt
 推荐放到：
 
 ```text
-~/marvinGrasp/model/sam3.pt
+~/marvinGrasp/perception/models/sam3.pt
 ```
 
 最终结构例如：
 
 ```text
 marvinGrasp/
-└── model/
-    └── sam3.pt
+└── perception/
+    └── models/
+        └── sam3.pt
 ```
 
 注意：
@@ -461,10 +462,11 @@ ScaleNet3.pth
 
 ```text
 marvinGrasp/
-└── model/
-    ├── FlowNet3.pth
-    ├── ScaleNet3.pth
-    └── sam3.pt
+└── perception/
+    └── models/
+        ├── FlowNet3.pth
+        ├── ScaleNet3.pth
+        └── sam3.pt
 ```
 
 ---
@@ -489,9 +491,9 @@ config/models.yaml
 例如：
 
 ```yaml
-sam3_checkpoint: /home/<USER>/marvinGrasp/model/sam3.pt
-flownet_checkpoint: /home/<USER>/marvinGrasp/model/FlowNet3.pth
-scalenet_checkpoint: /home/<USER>/marvinGrasp/model/ScaleNet3.pth
+sam3_checkpoint: /home/<USER>/marvinGrasp/perception/models/sam3.pt
+flownet_checkpoint: /home/<USER>/marvinGrasp/perception/models/FlowNet3.pth
+scalenet_checkpoint: /home/<USER>/marvinGrasp/perception/models/ScaleNet3.pth
 dinov2_root: /home/<USER>/dinov2
 ```
 
@@ -957,7 +959,7 @@ python -c "import grpc; print(grpc.__version__)"
 项目本身还包含：
 
 ```text
-daimon_stuff
+daimon_gripper
 ```
 
 ---
@@ -1197,7 +1199,7 @@ config/
 ├── hardware.yaml
 ├── calibration.yaml
 ├── models.yaml
-├── tool.yaml
+├── grasp_core/resources/tool.yaml
 ├── workspace.yaml
 └── profiles/
     ├── robot_old.yaml
@@ -1231,11 +1233,11 @@ frames:
 ## 27.2 models.yaml
 
 ```yaml
-sam3_checkpoint: /home/<USER>/marvinGrasp/model/sam3.pt
+sam3_checkpoint: /home/<USER>/marvinGrasp/perception/models/sam3.pt
 
 flowpose:
-  flownet_checkpoint: /home/<USER>/marvinGrasp/model/FlowNet3.pth
-  scalenet_checkpoint: /home/<USER>/marvinGrasp/model/ScaleNet3.pth
+  flownet_checkpoint: /home/<USER>/marvinGrasp/perception/models/FlowNet3.pth
+  scalenet_checkpoint: /home/<USER>/marvinGrasp/perception/models/ScaleNet3.pth
 
 dinov2_root: /home/<USER>/dinov2
 ```
@@ -1371,7 +1373,7 @@ Import success
 并确认：
 
 ```text
-model/sam3.pt
+perception/models/sam3.pt
 ```
 
 存在。
@@ -1688,7 +1690,7 @@ Python package 已安装
 检查：
 
 ```bash
-ls ~/marvinGrasp/model/
+ls ~/marvinGrasp/perception/models/
 ```
 
 ---

@@ -18,8 +18,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlsplit
 
-DEFAULT_DAIMON_STUFF_DIR = PROJECT_ROOT / "daimon_stuff"
-DEFAULT_RECEIVER_PATH = DEFAULT_DAIMON_STUFF_DIR / "grip_signal_receiver.py"
+DEFAULT_DAIMON_GRIPPER_DIR = PROJECT_ROOT / "daimon_gripper"
+DEFAULT_RECEIVER_PATH = DEFAULT_DAIMON_GRIPPER_DIR / "grip_signal_receiver.py"
 
 _RECEIVER_OPTION_MAP = {
     "gripper_hand": "--hand",
@@ -279,6 +279,8 @@ def _start_single_gripper_signal_receiver(
     command = [
         sys.executable,
         str(receiver_path),
+        "--command",
+        "serve",
         "--host",
         host,
         "--port",
@@ -420,7 +422,8 @@ def _send_single_gripper_signal(
     status = f"{action} {label} gripper {command} to {host}:{port}"
     if reply:
         status += f": {reply}"
-    print(f"[gripper:{label}] {status}", flush=True)
+    if command != "feedback" or not ok:
+        print(f"[gripper:{label}] {status}", flush=True)
     return status
 
 
