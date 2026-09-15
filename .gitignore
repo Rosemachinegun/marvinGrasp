@@ -1,5 +1,6 @@
 # Model weights and runtime captures
-perception/models/
+perception/models/*
+!perception/models/.gitkeep
 captures/
 
 # Python cache
