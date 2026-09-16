@@ -65,6 +65,14 @@ from grasp_core.execution.robot_skill_service import (  # noqa: E402
 from grasp_core.execution.skills.grasp import GRASP_PLANNER  # noqa: E402
 from grasp_core.planning.grasp.policies.ribbon import assume_grasp_success  # noqa: E402
 from grasp_core.planning.grasp.planner import UnifiedGraspPlanner  # noqa: E402
+from add.voice import VoiceGraspInput  # noqa: E402
+from add.web import (  # noqa: E402
+    TabletCommand,
+    TabletTaskLoopBridge,
+    TabletWebService,
+    format_base_link_targets,
+)
+from add.settings import VOICE_ENABLED, WEB_ENABLED  # noqa: E402
 
 
 # OpenCV returns a single byte for keyboard input, so normalize to lowercase once.
@@ -76,6 +84,7 @@ KEY_PERCEPTION_PIPELINE = ord("z")
 KEY_HOME = ord("h")
 KEY_GRIP = ord("l")
 KEY_RELEASE = ord("p")
+KEY_VOICE = ord("v")
 KEY_PAUSE = ord("s")
 
 DASHBOARD_WINDOW = "RealSense + SAM3 + FlowPose"
@@ -211,6 +220,12 @@ class GraspDemoApp:
         self.sam_cache: dict[str, Sam3Runner | None] = {"runner": None}
         self.flowpose_cache: dict[str, FlowPoseRunner | None] = {"runner": None}
         self.pick_templates = None
+        self.tablet_bridge = TabletTaskLoopBridge()
+        self.tablet_web: TabletWebService | None = None
+        self.voice_input = VoiceGraspInput(
+            enabled=bool(getattr(args, "voice_enabled", VOICE_ENABLED)),
+            record_seconds=float(getattr(args, "voice_record_seconds", 4.0)),
+        )
 
     def _print_camera_extrinsic(self) -> None:
         ext = self.camera_extrinsic
@@ -245,6 +260,15 @@ class GraspDemoApp:
         self.flowpose_cache["runner"] = FlowPoseRunner(**self.flowpose_kwargs)
         print("[startup] SAM3 and FlowPose runners ready", flush=True)
 
+        self.tablet_web = TabletWebService(
+            self.tablet_bridge,
+            host=str(getattr(self.args, "tablet_host", "0.0.0.0")),
+            port=int(getattr(self.args, "tablet_port", 7860)),
+            enabled=bool(getattr(self.args, "tablet_ui", WEB_ENABLED)),
+            voice_enabled=self.voice_input.enabled,
+        )
+        self.tablet_web.start()
+
     def _move_both_hands_home_at_startup(self) -> None:
         """Return both arms HOME before the application accepts any task."""
         if self.robot_actions is None or self.ik_publisher is None:
@@ -263,6 +287,10 @@ class GraspDemoApp:
 
     def close(self) -> None:
         """Release all resources. Safe to call after partial startup."""
+        self.voice_input.close()
+        if self.tablet_web is not None:
+            self.tablet_web.close()
+            self.tablet_web = None
         self.camera.close()
 
         if self.ik_publisher is not None:
@@ -452,7 +480,7 @@ class GraspDemoApp:
             self.sam_cache,
             self.sam_kwargs,
             frozen_bundle,
-            self.args.prompts,
+            self.active_prompts(),
             meta_path,
             metadata,
             self.args,
@@ -466,6 +494,13 @@ class GraspDemoApp:
         print(f"[capture] saved metadata: {meta_path}", flush=True)
         if retry:
             print(f"[grip_retry] {self.state.status}", flush=True)
+
+    def active_prompts(self) -> str:
+        """Return the normal prompts or the currently selected voice target."""
+        return self.voice_input.sam_prompt(
+            str(self.args.prompts),
+            self.pick_templates,
+        )
 
     def submit_flowpose(self, *, retry: bool = False) -> None:
         """Submit FlowPose for the latest completed SAM3 result."""
@@ -737,6 +772,9 @@ class GraspDemoApp:
         if "GRASP_DROPPED" in result.status:
             self.start_drop_recovery(result.status, result.grasp_hand)
         elif result.ok:
+            # Voice selection is one-shot: it applies to this grasp/place cycle
+            # only. The next post-place perception uses the normal prompts.
+            self.voice_input.finish_task()
             if target_count is not None and target_count > 1:
                 self.state.parked_after_place_hand = result.grasp_hand
             self.state.grasp_confirmed = False
@@ -1190,7 +1228,7 @@ class GraspDemoApp:
             results.append(f"{hand}: {status}")
         return " | ".join(results)
 
-    def publish_manual_home(self) -> None:
+    def publish_manual_home(self, hands: tuple[str, ...] = ("left", "right")) -> None:
         if (self.grasp_future is not None or self.place_future is not None
                 or self.gripper_future is not None
                 or self.manual_home_future is not None or self.state.recovery_futures
@@ -1198,14 +1236,98 @@ class GraspDemoApp:
                 or self.state.pipeline_stage is not PipelineStage.IDLE):
             self.state.status = "HOME deferred: another robot action is still running"
             return
-        hands = ("left", "right")
         self.manual_home_hand = hands
         self.manual_home_future = self.action_executor.submit(
             self._publish_manual_homes,
             hands,
             frozenset(self.state.home_needs_sync),
         )
-        self.state.status = "Both hands HOME: returning in parallel"
+        self.state.status = (
+            "Both hands HOME: returning in parallel"
+            if len(hands) > 1
+            else f"{hands[0]} HOME: returning"
+        )
+
+    def handle_tablet_commands(self, bundle) -> None:
+        """Translate tablet commands into existing main-loop operations."""
+        for command in self.tablet_bridge.drain_commands():
+            if self.state.paused and command not in {
+                TabletCommand.STOP,
+                TabletCommand.HOME_LEFT,
+                TabletCommand.HOME_RIGHT,
+            }:
+                continue
+            if command is TabletCommand.PERCEIVE:
+                self.start_pipeline(grasp_on_done=False)
+            elif command is TabletCommand.GRASP:
+                if self.state.base_targets:
+                    self.publish_grasp()
+                else:
+                    self.start_pipeline(grasp_on_done=True)
+            elif command is TabletCommand.VOICE:
+                self.request_voice()
+            elif command is TabletCommand.HOME_LEFT:
+                self.publish_manual_home(("left",))
+            elif command is TabletCommand.HOME_RIGHT:
+                self.publish_manual_home(("right",))
+            elif command is TabletCommand.STOP:
+                self.stop_from_tablet()
+
+    def robot_busy(self) -> bool:
+        """Return whether a robot or inference task currently owns the workflow."""
+        return any(
+            (
+                is_pending(self.grasp_future),
+                is_pending(self.place_future),
+                is_pending(self.manual_home_future),
+                is_pending(self.auto_home_future),
+                is_pending(self.state.sam_future),
+                is_pending(self.state.flowpose_future),
+            )
+        )
+
+    def request_voice(self) -> None:
+        """Start the same one-shot voice flow for keyboard and tablet input."""
+        status = self.voice_input.request(robot_busy=self.robot_busy())
+        if status:
+            self.state.status = status
+
+    def stop_from_tablet(self) -> None:
+        """Request the same safe stop used by the keyboard pause key."""
+        self.voice_input.cancel()
+        self.state.paused = True
+        self.state.pipeline_stage = PipelineStage.IDLE
+        self.state.continuous_grasp_pending = False
+        self.reset_retry()
+        self.gripper_interrupted = self.gripper_future is not None
+        if self.ik_publisher is not None:
+            self.ik_publisher.request_stop()
+        self.state.status = "Stopped from tablet"
+
+    def collect_voice_result(self) -> None:
+        """Apply one completed STT result on the application thread."""
+        parsed = self.voice_input.poll()
+        if parsed is None:
+            return
+        self.state.status = parsed.status
+        if parsed.target is None or self.state.paused:
+            return
+        self.voice_input.activate(parsed.target)
+        self.start_pipeline(grasp_on_done=True)
+
+    def publish_tablet_state(self, bundle) -> None:
+        """Publish the latest in-memory perception result to the tablet UI."""
+        targets = format_base_link_targets(self.state.base_targets)
+        self.tablet_bridge.publish(
+            bundle.color_image,
+            status=self.state.status,
+            sam_bgr=self.state.sam_overlay,
+            flowpose_bgr=self.state.flowpose_overlay,
+            base_target_text=targets,
+        )
+        self.tablet_bridge.set_activity(
+            "Paused" if self.state.paused else self.state.status
+        )
 
     def collect_manual_home_result(self) -> None:
         if self.manual_home_future is None or not self.manual_home_future.done():
@@ -1303,6 +1425,8 @@ class GraspDemoApp:
             self.send_gripper("grip", followup=False)
         elif key == KEY_RELEASE:
             self.send_gripper("release", followup=False)
+        elif key == KEY_VOICE:
+            self.request_voice()
 
         return True
 
@@ -1319,6 +1443,8 @@ class GraspDemoApp:
                 print("[camera] failed to read frame; retrying...", flush=True)
                 continue
 
+            self.handle_tablet_commands(bundle)
+            self.collect_voice_result()
             if self.state.paused:
                 if not self.state.status.startswith("Paused by S"):
                     self.state.status = "Paused by S"
@@ -1336,6 +1462,7 @@ class GraspDemoApp:
                 self.advance_drop_regrasp()
                 self.advance_continuous_grasp()
                 self.advance_replan_state(bundle)
+            self.publish_tablet_state(bundle)
             self.render(bundle)
 
             if not self.handle_key(cv2.waitKey(1), bundle):

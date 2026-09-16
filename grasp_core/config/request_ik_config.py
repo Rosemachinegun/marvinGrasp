@@ -9,6 +9,7 @@ import argparse
 from dataclasses import dataclass
 
 import numpy as np
+from add.settings import VOICE_ENABLED, WEB_ENABLED
 from grasp_core.config.parsing import (
     parse_bool,
 )
@@ -185,6 +186,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
     parser.add_argument("--prompts", default="toy, yellow_screwdriver_handle,pen,rectangular object,ribbon")
+    parser.add_argument(
+        "--tablet-ui",
+        action=argparse.BooleanOptionalAction,
+        default=WEB_ENABLED,
+        help=(
+            "Enable the Gradio tablet control panel "
+            "(enabled by default; use --no-tablet-ui to disable)."
+        ),
+    )
+    parser.add_argument(
+        "--tablet-host",
+        default="0.0.0.0",
+        help="Bind address for the optional tablet control panel.",
+    )
+    parser.add_argument(
+        "--tablet-port",
+        type=int,
+        default=7860,
+        help="TCP port for the optional tablet control panel.",
+    )
+    parser.add_argument(
+        "--voice-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=VOICE_ENABLED,
+        help=(
+            "Enable the V-key/web voice command and STT worker "
+            "(enabled by default; use --no-voice-enabled to disable)."
+        ),
+    )
+    parser.add_argument(
+        "--voice-record-seconds",
+        type=float,
+        default=4.0,
+        help="Duration of one voice recording.",
+    )
     parser.add_argument(
         "--sam3-checkpoint-path",
         default=str(PROJECT_ROOT / "perception" / "models" / "sam3.pt"),
