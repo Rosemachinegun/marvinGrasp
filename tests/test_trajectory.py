@@ -2,13 +2,13 @@ import pytest
 import numpy as np
 
 from grasp_core.execution.motion_executor import terminal_sample_periods
-from grasp_core.planning.trajectory.planner import trajectory_linear_velocities
+from grasp_core.planning.trajectory.timing import trajectory_linear_velocities
 from grasp_core.planning.trajectory.interpolation import startup_ramp_alpha
-from grasp_core.planning.trajectory.planner import (
+from grasp_core.planning.trajectory.interpolation import (
     cubic_bezier_from_tangents,
-    plan_pose_path,
     position_tangents,
 )
+from grasp_core.planning.trajectory.planner import plan_pose_path
 from grasp_core.core.math.pose import quaternion_angle_rad
 
 

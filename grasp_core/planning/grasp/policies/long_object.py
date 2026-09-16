@@ -101,10 +101,12 @@ GRIPPER_APPROACH_AXIS_INDEX = 2
 # Published local X is the long axis and local Y is the short axis.
 FLOWPOSE_LONG_AXIS_INDEX = 0
 POLICY_LONG_AXIS_INDEX = 0
+FINAL_TOOL_YAW_MIN_DEG = -15.0
+FINAL_TOOL_YAW_MAX_DEG = 45.0
 
 
 @dataclass(frozen=True)
-class ScrewdriverHandleGraspPolicyResult:
+class CuboidGraspPolicyResult:
     """Adjusted screwdriver-handle grasp plan."""
 
     pose: np.ndarray
@@ -135,11 +137,16 @@ class ScrewdriverHandleGraspPolicyResult:
 
 
 def long_object_grasp_policy_for_object(
-    object_type: str,
+    object_type: str | None = None,
+    *,
+    force: bool = False,
 ) -> LongObjectGraspPolicy | None:
-    """Return grasp policy config for supported screwdriver/pen style objects."""
+    """Return the long-object policy, optionally without label dispatch."""
 
-    normalized_type = normalize_object_type(object_type)
+    if force:
+        return LongObjectGraspPolicy(keyword="generic_long_object", closing_axis="y")
+
+    normalized_type = normalize_object_type(object_type or "")
 
     for policy in LONG_OBJECT_POLICIES:
         if policy.keyword in normalized_type:
@@ -166,24 +173,25 @@ def policy_axis_index(axis_name: str) -> int:
     return POLICY_AXIS_INDEX_BY_NAME[axis_name]
 
 
-def is_screwdriver_handle_object(object_type: str) -> bool:
+def is_cuboid_object(object_type: str) -> bool:
     """Return True for supported screwdriver/pen style long objects."""
 
     return long_object_grasp_policy_for_object(object_type) is not None
 
 
-def make_screwdriver_handle_gripper_pose(
+def make_cuboid_gripper_pose(
     target: TargetObjectPose,
     args: argparse.Namespace,
     *,
     hand: str,
+    force_long_object: bool = False,
 ) -> tuple[
     np.ndarray,
-    ScrewdriverHandleGraspPolicyResult,
+    CuboidGraspPolicyResult,
 ] | None:
     """Construct the gripper target pose for a screwdriver handle."""
 
-    policy = long_object_grasp_policy_for_object(target.label)
+    policy = long_object_grasp_policy_for_object(target.label, force=force_long_object)
     if policy is None:
         return None
 
@@ -191,7 +199,7 @@ def make_screwdriver_handle_gripper_pose(
     if side_sign == 0.0:
         return None
 
-    object_pose = screwdriver_handle_z_up_object_pose(
+    object_pose = cuboid_z_up_object_pose(
         target.base_pose,
     )
 
@@ -199,7 +207,7 @@ def make_screwdriver_handle_gripper_pose(
     if fallback_reason is not None:
         return None
 
-    # After screwdriver_handle_z_up_object_pose():
+    # After cuboid_z_up_object_pose():
     #
     # object_pose[:, 0] = physical long axis
     # object_pose[:, 1] = lateral/short axis
@@ -213,7 +221,7 @@ def make_screwdriver_handle_gripper_pose(
     gripper_pose[:3, 3] = object_pose[:3, 3]
 
     orientation, yaw_deg, tilt_y_deg = (
-        screwdriver_handle_wrist_orientation(
+        cuboid_wrist_orientation(
             args,
             hand=hand,
             closing_axis=closing_axis,
@@ -235,7 +243,7 @@ def make_screwdriver_handle_gripper_pose(
 
     return (
         gripper_pose,
-        ScrewdriverHandleGraspPolicyResult(
+        CuboidGraspPolicyResult(
             pose=gripper_pose,
             object_pose=object_pose,
             side_sign=side_sign,
@@ -251,12 +259,13 @@ def make_screwdriver_handle_gripper_pose(
     )
 
 
-def build_screwdriver_handle_pick_waypoints(
+def build_cuboid_pick_waypoints(
     target: TargetObjectPose,
     relative_waypoints: list[PickTemplateWaypoint],
     args: argparse.Namespace,
     *,
     hand: str,
+    force_long_object: bool = False,
 ) -> list[PickTemplateWaypoint] | None:
     """Build screwdriver-handle pick waypoints.
 
@@ -272,7 +281,7 @@ def build_screwdriver_handle_pick_waypoints(
         relative Z -> vertical offset
     """
 
-    policy = long_object_grasp_policy_for_object(target.label)
+    policy = long_object_grasp_policy_for_object(target.label, force=force_long_object)
     if policy is None:
         return None
 
@@ -283,7 +292,7 @@ def build_screwdriver_handle_pick_waypoints(
     if side_sign == 0.0:
         return None
 
-    object_pose = screwdriver_handle_z_up_object_pose(
+    object_pose = cuboid_z_up_object_pose(
         target.base_pose,
     )
 
@@ -300,7 +309,7 @@ def build_screwdriver_handle_pick_waypoints(
     gripper_pose = np.eye(4, dtype=np.float64)
 
     gripper_pose[:3, :3] = (
-        screwdriver_handle_wrist_orientation(
+        cuboid_wrist_orientation(
             args,
             hand=hand,
             closing_axis=closing_axis,
@@ -343,18 +352,18 @@ def build_screwdriver_handle_pick_waypoints(
     return waypoints
 
 
-def screwdriver_handle_pose_waypoints(
+def cuboid_pose_waypoints(
     target: TargetObjectPose,
     args: argparse.Namespace,
     *,
     hand: str,
 ) -> tuple[
     list[PoseWaypoint],
-    ScrewdriverHandleGraspPolicyResult,
+    CuboidGraspPolicyResult,
 ] | None:
     """Return the single IK target waypoint for the screwdriver policy."""
 
-    result = make_screwdriver_handle_gripper_pose(
+    result = make_cuboid_gripper_pose(
         target,
         args,
         hand=hand,
@@ -376,7 +385,7 @@ def screwdriver_handle_pose_waypoints(
     )
 
 
-def screwdriver_handle_z_up_object_pose(
+def cuboid_z_up_object_pose(
     object_pose: np.ndarray,
     size: np.ndarray | None = None,
     *,
@@ -389,10 +398,11 @@ def screwdriver_handle_z_up_object_pose(
         Y = physical short axis
         Z = world +Z
 
-    The long-axis sign is intentionally preserved from published local X.
-    This keeps relative waypoint X offsets object-centric: a configured -X
-    offset always reaches the same physical end of the object regardless of
-    object placement or selected arm.
+    The long-axis sign is normalized for grasping: the XY yaw of +X is always
+    within [-90, 90] degrees in the robot base frame.  The short axis is
+    flipped together with X, so the frame stays right-handed.  This removes
+    the raw perception sign ambiguity without depending on the target's
+    distance or direction from the robot base.
 
     The frame always remains right-handed.
     """
@@ -410,10 +420,29 @@ def screwdriver_handle_z_up_object_pose(
         raise ValueError("long-object pose must already be Z-up")
     if abs(float(pose[2, FLOWPOSE_LONG_AXIS_INDEX])) > 1e-5:
         raise ValueError("long-object X long axis must already be horizontal")
+
+    pose = orient_long_object_axis_to_forward_half_plane(pose)
     return pose
 
 
-def screwdriver_handle_long_axis_index(
+def orient_long_object_axis_to_forward_half_plane(object_pose: np.ndarray) -> np.ndarray:
+    """Keep the long-object X yaw within [-90, 90] degrees.
+
+    The reference is only the robot base X axis; target position is not used.
+    A long-object axis is an unoriented line, so reversing X is physically
+    equivalent. Reverse Y at the same time to preserve ``X x Y = Z``.
+    """
+
+    pose = np.asarray(object_pose, dtype=np.float64).copy()
+    long_axis = pose[:3, 0]
+    yaw_rad = float(np.arctan2(long_axis[1], long_axis[0]))
+    if abs(yaw_rad) > (0.5 * np.pi):
+        pose[:3, 0] *= -1.0
+        pose[:3, 1] *= -1.0
+    return pose
+
+
+def cuboid_long_axis_index(
     size: np.ndarray | None,
 ) -> int:
     """Return the long-axis index in the unified Z-up object frame."""
@@ -422,7 +451,7 @@ def screwdriver_handle_long_axis_index(
     return POLICY_LONG_AXIS_INDEX
 
 
-def screwdriver_handle_long_axis(
+def cuboid_long_axis(
     object_pose: np.ndarray,
     size: np.ndarray | None = None,
     *,
@@ -453,7 +482,7 @@ def screwdriver_handle_long_axis(
             f"unsupported hand: {hand!r}"
         )
 
-    z_up_pose = screwdriver_handle_z_up_object_pose(
+    z_up_pose = cuboid_z_up_object_pose(
         pose,
         size,
     )
@@ -471,12 +500,12 @@ def screwdriver_handle_long_axis(
     return long_axis.copy()
 
 
-def screwdriver_handle_lateral_axis(
+def cuboid_lateral_axis(
     object_pose: np.ndarray,
 ) -> np.ndarray:
     """Return policy local Y, the lateral/closing direction.
 
-    screwdriver_handle_z_up_object_pose() already defines:
+    cuboid_z_up_object_pose() already defines:
 
         Y = Z x X
 
@@ -494,7 +523,7 @@ def screwdriver_handle_lateral_axis(
     )
 
 
-def screwdriver_handle_wrist_orientation(
+def cuboid_wrist_orientation(
     args: argparse.Namespace,
     *,
     hand: str,
@@ -510,7 +539,7 @@ def screwdriver_handle_wrist_orientation(
         args,
     )
 
-    yaw_deg = screwdriver_handle_yaw_deg(
+    yaw_deg = cuboid_yaw_deg(
         base_rotation,
         closing_axis,
         reference_yaw_deg=(
@@ -552,6 +581,8 @@ def screwdriver_handle_wrist_orientation(
             base_rotation @ tilt_rotation
         )
 
+    orientation = normalize_final_z_yaw(orientation)
+
     return (
         orientation,
         yaw_deg,
@@ -559,7 +590,62 @@ def screwdriver_handle_wrist_orientation(
     )
 
 
-def screwdriver_handle_yaw_deg(
+def normalize_final_z_yaw(rotation: np.ndarray) -> np.ndarray:
+    """Force final tool-Z yaw into [-15, 45] degrees.
+
+    The correction is applied around the base-frame Z axis.  This changes the
+    actual orientation and therefore the quaternion sent to the robot.
+    """
+
+    result = np.asarray(rotation, dtype=np.float64).copy()
+    z_axis = result[:3, 2]
+    yaw_deg = float(np.rad2deg(np.arctan2(z_axis[1], z_axis[0])))
+
+    # First select the equivalent robot-facing representation.  Directly
+    # clipping 111 degrees to +55 would keep the unsafe sign; 111 - 180 is
+    # -69 degrees and must then be clipped on the negative side.
+    normalized_yaw_deg = yaw_deg
+    if normalized_yaw_deg > 90.0:
+        normalized_yaw_deg -= 180.0
+    elif normalized_yaw_deg < -90.0:
+        normalized_yaw_deg += 180.0
+
+    clipped_yaw_deg = float(
+        np.clip(
+            normalized_yaw_deg,
+            FINAL_TOOL_YAW_MIN_DEG,
+            FINAL_TOOL_YAW_MAX_DEG,
+        )
+    )
+    correction_deg = clipped_yaw_deg - yaw_deg
+
+    if correction_deg != 0.0:
+        result = (
+            make_downward_tilt_rotation(
+                correction_deg,
+                axis="z",
+            )
+            @ result
+        )
+
+    final_z_axis = result[:3, 2]
+    final_yaw_deg = float(
+        np.rad2deg(
+            np.arctan2(final_z_axis[1], final_z_axis[0])
+        )
+    )
+    print(
+        "\033[93m"
+        f"[long_object] z_yaw raw={yaw_deg:.2f}deg "
+        f"normalized={normalized_yaw_deg:.2f}deg "
+        f"final={final_yaw_deg:.2f}deg"
+        "\033[0m",
+        flush=True,
+    )
+    return result
+
+
+def cuboid_yaw_deg(
     base_rotation: np.ndarray,
     closing_axis: np.ndarray,
     *,

@@ -8,8 +8,37 @@ import re
 
 import numpy as np
 
+BOX_CUBE_ASPECT_RATIO_MAX = 1.2
 
-def is_long_object(label: str) -> bool:
+
+def classify_box_shape(size: np.ndarray | None) -> str | None:
+    """Classify a target by its three edge lengths.
+
+    A target is cube-like when its longest edge is no more than 1.2 times its
+    shortest edge. Missing or invalid dimensions remain unclassified.
+    """
+    if size is None:
+        return None
+    dimensions = np.asarray(size, dtype=np.float64).reshape(-1)
+    if (
+        dimensions.size != 3
+        or not np.all(np.isfinite(dimensions))
+        or np.any(dimensions <= 0)
+    ):
+        return None
+    ratio = float(np.max(dimensions) / np.min(dimensions))
+    return "cube" if ratio <= BOX_CUBE_ASPECT_RATIO_MAX else "cuboid"
+
+
+def is_long_object(label: str, size: np.ndarray | None = None) -> bool:
+    """Return whether a target uses the long-object axis convention.
+
+    Dimensions are authoritative for the unified grasp pipeline. The label
+    fallback keeps older callers without dimensions compatible.
+    """
+    shape = classify_box_shape(size)
+    if shape is not None:
+        return shape == "cuboid"
     name = re.sub(r"[^a-z0-9]+", "_", str(label).strip().lower())
     return "screwdriver_handle" in name or "pen" in name
 
@@ -19,6 +48,7 @@ def canonical_long_object_pose(
     size: np.ndarray | None = None,
     *,
     source_long_axis: int | None = None,
+    allow_horizontal_fallback: bool = False,
 ) -> tuple[np.ndarray, np.ndarray | None]:
     """Rebuild Z-up axes from a pose and its *matching* box dimensions.
 
@@ -48,7 +78,14 @@ def canonical_long_object_pose(
     if source_long_axis is None:
         if dimensions is None:
             raise ValueError("raw long-object axis selection requires box dimensions")
-        source_long_axis = int(np.argmax(dimensions))
+        if allow_horizontal_fallback:
+            horizontal_norms = np.linalg.norm(pose[:2, :3], axis=0)
+            weighted_norms = dimensions * horizontal_norms
+            source_long_axis = int(np.argmax(weighted_norms))
+            if weighted_norms[source_long_axis] < 1e-8:
+                source_long_axis = int(np.argmax(horizontal_norms))
+        else:
+            source_long_axis = int(np.argmax(dimensions))
     if source_long_axis not in (0, 1, 2):
         raise ValueError("source long axis must be 0, 1 or 2")
     x = pose[:3, source_long_axis].copy()

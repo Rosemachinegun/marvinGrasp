@@ -391,11 +391,27 @@ def log_grasp_pose_plan(
             flush=True,
         )
     print(
-        "[grasp] T_base_gripper "
+        "\033[91m"
+        "[grasp] FINAL T_base_gripper "
+        f"object_type={target.label!r} frame={target.frame_id} "
         f"xyz={format_xyz(gripper_pose[:3, 3])} "
         f"quat_xyzw={format_quat(gripper_quat)} "
         f"fallback={bool(fallback_reason)}"
-        f"{f' reason={fallback_reason}' if fallback_reason else ''}",
+        f"{f' reason={fallback_reason}' if fallback_reason else ''}"
+        "\033[0m",
+        flush=True,
+    )
+    final_z_axis = np.asarray(gripper_pose, dtype=np.float64)[:3, 2]
+    final_z_yaw_deg = float(
+        np.rad2deg(
+            np.arctan2(final_z_axis[1], final_z_axis[0])
+        )
+    )
+    print(
+        "\033[93m"
+        f"[grasp] FINAL z_yaw={final_z_yaw_deg:.2f}deg "
+        "(base frame)"
+        "\033[0m",
         flush=True,
     )
 

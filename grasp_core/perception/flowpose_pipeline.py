@@ -20,7 +20,11 @@ import cv2
 import numpy as np
 
 from grasp_core.core.math.pose import select_ik_hand
-from grasp_core.core.math.object_axes import canonical_long_object_pose, is_long_object
+from grasp_core.core.math.object_axes import (
+    canonical_long_object_pose,
+    classify_box_shape,
+    is_long_object,
+)
 from grasp_core.core.types.robot_target_pose import make_target_object_pose
 from grasp_core.perception.realsense_sam3 import (
     DEFAULT_BBOX_CONTAINMENT_THRESHOLD,
@@ -38,8 +42,8 @@ from grasp_core.perception.realsense_sam3 import (
     resolve_checkpoint_path,
     save_inference_result,
 )
-from grasp_core.planning.grasp.policies.cube_z_symmetry import (
-    apply_cube_z_symmetry_grasp_policy,
+from grasp_core.planning.grasp.policies.box_symmetry import (
+    apply_box_z_symmetry_grasp_policy,
     local_minus_x_base,
 )
 
@@ -691,7 +695,8 @@ def draw_pose_label(
 
 
 def make_labels(prompt: str, count: int) -> list[str]:
-    return [f"{prompt}_{i + 1}" for i in range(count)]
+    # Keep the instance name zero-based and identical to the SAM3 overlay.
+    return [f"{prompt}_{i}" for i in range(count)]
 
 
 def split_prompts(prompts: str) -> list[str]:
@@ -764,6 +769,8 @@ def run_sam3_job(
     capture_meta_path: Path,
     capture_metadata: dict[str, Any],
     args: argparse.Namespace | None = None,
+    save_outputs: bool = True,
+    save_visualization: bool = False,
 ) -> Sam3FrameResult:
     job_start = time.perf_counter()
     runner_init_sec = 0.0
@@ -805,21 +812,31 @@ def run_sam3_job(
         "infer_sec": round(infer_sec, 4),
         "postprocess_sec": round(postprocess_sec, 4),
     }
-    result_path = save_inference_result(
-        capture_meta_path,
-        {
-            **capture_metadata,
-            "sam3_timing": timing,
-            "sam3_roi_filter": {
-                "enabled": roi_filter_enabled,
-                "roi_xyxy": list(roi_xyxy) if roi_xyxy is not None else None,
-                "raw_count": raw_count,
-                "kept_count": roi_count,
-            },
-        },
-        postprocessed.detections,
-        postprocessed.overlay,
+    result_path = capture_meta_path.with_name(
+        capture_meta_path.name.replace("_meta.json", "_sam3.json")
     )
+    if save_outputs:
+        result_path = save_inference_result(
+            capture_meta_path,
+            {
+                **capture_metadata,
+                "sam3_timing": timing,
+                "sam3_roi_filter": {
+                    "enabled": roi_filter_enabled,
+                    "roi_xyxy": list(roi_xyxy) if roi_xyxy is not None else None,
+                    "raw_count": raw_count,
+                    "kept_count": roi_count,
+                },
+            },
+            postprocessed.detections,
+            postprocessed.overlay,
+        )
+    elif save_visualization:
+        overlay_path = capture_meta_path.with_name(
+            capture_meta_path.name.replace("_meta.json", "_sam3_artist.png")
+        )
+        overlay_path.parent.mkdir(parents=True, exist_ok=True)
+        imwrite_checked(overlay_path, postprocessed.overlay)
     save_sec = time.perf_counter() - save_start
     elapsed_sec = time.perf_counter() - job_start
     return Sam3FrameResult(
@@ -843,6 +860,8 @@ def run_flowpose_job(
     sam_result: Sam3FrameResult,
     args: argparse.Namespace | None = None,
     base_to_camera: np.ndarray | None = None,
+    save_outputs: bool = True,
+    save_visualization: bool = False,
 ) -> FlowPoseResult:
     job_start = time.perf_counter()
     runner_init_sec = 0.0
@@ -869,7 +888,7 @@ def run_flowpose_job(
         output.get("raw_length_all") or output["length_all"],
     )
     output = apply_long_object_axes_to_flowpose_output(output, base_to_camera)
-    output = apply_cube_z_symmetry_to_flowpose_output(output, args, base_to_camera)
+    output = apply_box_symmetry_to_flowpose_output(output, args, base_to_camera)
     visualize_save_start = time.perf_counter()
     visualization = runner.visualize(
         flowpose_input.color_bgr,
@@ -879,14 +898,24 @@ def run_flowpose_job(
         output["length_all"],
         normalized_indices=output.get("long_object_normalized_indices"),
     )
-    result_path, visualization_path = save_flowpose_result(
-        sam_result,
-        {
-            **output,
-            "runner_init_sec": round(runner_init_sec, 4),
-        },
-        visualization,
+    result_path = sam_result.result_path.with_name(
+        sam_result.result_path.name.replace("_sam3.json", "_flowpose.json")
     )
+    visualization_path = sam_result.result_path.with_name(
+        sam_result.result_path.name.replace("_sam3.json", "_flowpose.png")
+    )
+    if save_outputs:
+        result_path, visualization_path = save_flowpose_result(
+            sam_result,
+            {
+                **output,
+                "runner_init_sec": round(runner_init_sec, 4),
+            },
+            visualization,
+        )
+    elif save_visualization:
+        visualization_path.parent.mkdir(parents=True, exist_ok=True)
+        imwrite_checked(visualization_path, visualization)
     visualize_save_sec = time.perf_counter() - visualize_save_start
     total_elapsed_sec = time.perf_counter() - job_start
     return FlowPoseResult(
@@ -953,14 +982,14 @@ def apply_long_object_axes_to_flowpose_output(
     }
 
 
-def apply_cube_z_symmetry_to_flowpose_output(
+def apply_box_symmetry_to_flowpose_output(
     output: dict[str, Any],
     args: argparse.Namespace | None,
     base_to_camera: np.ndarray | None,
 ) -> dict[str, Any]:
     if args is None or base_to_camera is None:
         return output
-    if not bool(getattr(args, "use_cube_z_symmetry_grasp_policy", False)):
+    if not bool(getattr(args, "use_box_z_symmetry_grasp_policy", False)):
         return output
 
     base_to_camera = np.asarray(base_to_camera, dtype=np.float64)
@@ -986,7 +1015,26 @@ def apply_cube_z_symmetry_to_flowpose_output(
             score=obj.score,
         )
         hand = select_ik_hand(target.base_xyz, args.ik_hand)
-        selection = apply_cube_z_symmetry_grasp_policy(target, hand=hand, args=args)
+        shape = classify_box_shape(target.size)
+        selection = apply_box_z_symmetry_grasp_policy(target, hand=hand, args=args)
+        if shape == "cuboid" and selection is None:
+            corrected_camera_pose = np.asarray(target.camera_pose, dtype=np.float64)
+            if index < len(adjusted_pose_all):
+                adjusted_pose_all[index] = corrected_camera_pose.tolist()
+            adjusted_objects.append(
+                FlowPoseObject(
+                    name=obj.name,
+                    obj_id=list(obj.obj_id),
+                    pose=corrected_camera_pose.tolist(),
+                    size=list(obj.size),
+                    score=obj.score,
+                )
+            )
+            print(
+                f"[long_object] {obj.name}_{index + 1}: shape=cuboid normalized",
+                flush=True,
+            )
+            continue
         if selection is None:
             adjusted_objects.append(obj)
             continue
@@ -1010,8 +1058,9 @@ def apply_cube_z_symmetry_to_flowpose_output(
         selected_dir = local_minus_x_base(selection.candidate.pose)
         side = "Y+" if selection.desired_y_sign > 0.0 else "Y-"
         print(
-            "[cube_z_symmetry] "
-            f"{obj.name}_{index + 1}: hand={hand} desired_side={side} "
+            "[box_z_symmetry] "
+            f"{obj.name}_{index + 1}: shape={selection.box_shape or 'unknown'} "
+            f"hand={hand} desired_side={side} "
             f"selected={selection.candidate.name} "
             f"angle={selection.candidate.angle_deg:.0f}deg "
             f"raw_minus_x=({raw_dir[0]:.3f},{raw_dir[1]:.3f},{raw_dir[2]:.3f}) "

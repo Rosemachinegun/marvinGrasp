@@ -184,7 +184,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--prompts", default="toy,yellow_screwdriver_handle,pen,rectangular object,ribbon")
+    parser.add_argument("--prompts", default="toy, yellow_screwdriver_handle,pen,rectangular object,ribbon")
     parser.add_argument(
         "--sam3-checkpoint-path",
         default=str(PROJECT_ROOT / "perception" / "models" / "sam3.pt"),
@@ -192,6 +192,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sam3-root", default=None)
     parser.add_argument(
         "--score-threshold", type=float, default=DEFAULT_SCORE_THRESHOLD
+    )
+    parser.add_argument(
+        "--target-order-cluster-eps-m",
+        type=float,
+        default=0.12,
+        help="DBSCAN neighborhood radius for target centers in meters.",
+    )
+    parser.add_argument(
+        "--target-order-cluster-use-z",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Include base_link Z when running target DBSCAN.",
+    )
+    parser.add_argument(
+        "--target-order-singleton-first",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Prioritize DBSCAN clusters containing exactly one target.",
+    )
+    parser.add_argument(
+        "--target-order-distance-axis",
+        choices=("xy", "xyz"),
+        default="xy",
+        help="Axes used for nearest/outermost target distance calculations.",
+    )
+    parser.add_argument(
+        "--target-order-max-volume-m3",
+        type=float,
+        default=0.0005,
+        help="Discard targets whose estimated volume exceeds this value.",
     )
     parser.add_argument(
         "--dedup-iou-threshold", type=float, default=DEFAULT_DEDUP_IOU_THRESHOLD

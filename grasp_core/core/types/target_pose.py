@@ -40,8 +40,12 @@ def make_target_object_pose(
     base_pose = base_to_camera @ camera_pose
     # Normalize historical captures as well as live targets. Published long
     # objects use X for length throughout perception, templates and grasping.
-    if is_long_object(label):
-        base_pose, _ = canonical_long_object_pose(base_pose, source_long_axis=0)
+    if is_long_object(label, size):
+        base_pose, _ = canonical_long_object_pose(
+            base_pose,
+            size,
+            allow_horizontal_fallback=True,
+        )
         camera_pose = np.linalg.inv(base_to_camera) @ base_pose
     return TargetObjectPose(
         label=label,
@@ -119,9 +123,18 @@ def make_child_frame_ids(labels: Iterable[str]) -> list[str]:
     counts: dict[str, int] = {}
     frame_ids: list[str] = []
     for label in labels:
-        base = normalize_label(label)
-        counts[base] = counts.get(base, 0) + 1
-        frame_ids.append(f"{base}_{counts[base]}")
+        # Preserve an explicit instance suffix such as ``pen_0``. Rebuilding
+        # IDs from the occurrence count changes the identity after FlowPose
+        # drops an invalid mask (for example pen_0 becomes pen_1).
+        sanitized = re.sub(r"[^A-Za-z0-9_]+", "_", str(label).strip())
+        sanitized = re.sub(r"_+", "_", sanitized).strip("_").lower()
+        base = sanitized or "object"
+        if base in counts:
+            counts[base] += 1
+            frame_ids.append(f"{base}_dup{counts[base]}")
+        else:
+            counts[base] = 0
+            frame_ids.append(base)
     return frame_ids
 
 

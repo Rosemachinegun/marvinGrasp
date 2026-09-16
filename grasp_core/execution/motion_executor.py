@@ -184,6 +184,9 @@ class RequestIkTargetPublisher:
         final_hold_sec: float | None = None,
         terminal_slowdown: bool = False,
         startup_slowdown: bool = False,
+        final_slowdown_ratio: float = 0.0,
+        smoothing_passes: int = 2,
+        direct_bezier: bool = False,
     ) -> int:
         if not waypoints:
             return 0
@@ -210,6 +213,9 @@ class RequestIkTargetPublisher:
             max_step_m=max_step_m,
             max_step_deg=max_step_deg,
             min_steps=min_steps,
+            final_slowdown_ratio=final_slowdown_ratio,
+            smoothing_passes=smoothing_passes,
+            direct_bezier=direct_bezier,
         )
         place_timing = getattr(self, "_place_timing", None)
         if place_timing is not None:
@@ -259,7 +265,7 @@ class RequestIkTargetPublisher:
                     break
                 if next_publish_at is not None:
                     next_publish_at += sample_periods_sec[len(sent_samples) - 1]
-                    time.sleep(0.005)
+                    time.sleep(0.004)
                     if not self.client.ok() or self.stop_requested():
                         completed_path = False
                         break
@@ -505,6 +511,8 @@ def publish_path(
     terminal_slowdown: bool = False,
     min_steps: int | None = None,
     startup_slowdown: bool = False,
+    final_slowdown_ratio: float = 0.0,
+    direct_bezier: bool = False,
 ) -> int:
     max_step_m, max_step_deg = effective_trajectory_step_limits(args)
     return publisher.publish_smooth_path(
@@ -523,6 +531,8 @@ def publish_path(
         final_hold_sec=final_hold_sec,
         terminal_slowdown=terminal_slowdown,
         startup_slowdown=startup_slowdown,
+        final_slowdown_ratio=final_slowdown_ratio,
+        direct_bezier=direct_bezier,
     )
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from grasp_core.core.math.pose import normalize_quaternion, slerp_quaternion
+from grasp_core.core.math.pose import normalize_quaternion
 
 
 def quaternion_step_rad(
@@ -17,4 +17,4 @@ def quaternion_step_rad(
     return 2.0 * float(np.arccos(np.clip(dot, -1.0, 1.0)))
 
 
-__all__ = ["quaternion_step_rad", "slerp_quaternion"]
+__all__ = ["quaternion_step_rad"]

@@ -50,9 +50,18 @@ class RobotActionService:
             executor=execute_fixed_place_after_grasp,
         )
 
-    def publish_grasp(self, targets: list[TargetObjectPose]) -> RobotActionResult:
+    def publish_grasp(
+        self,
+        targets: list[TargetObjectPose],
+        *,
+        retry: bool = False,
+    ) -> RobotActionResult:
         selected_target = selected_ik_target(targets, self.args)
-        status = self.grasp.execute(targets, self.pick_templates)
+        status = self.grasp.execute(
+            targets,
+            self.pick_templates,
+            retry=retry,
+        )
         assumed_success = (
             selected_target is not None
             and assume_grasp_success(selected_target.label)

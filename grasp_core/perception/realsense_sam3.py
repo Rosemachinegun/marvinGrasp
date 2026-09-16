@@ -22,7 +22,7 @@ from PIL import Image
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SERIAL = "406122070773"
 DEFAULT_PROMPTS = "pen"
-DEFAULT_SCORE_THRESHOLD = 0.25
+DEFAULT_SCORE_THRESHOLD = 0.1
 DEFAULT_DEDUP_IOU_THRESHOLD = 0.4
 DEFAULT_CONTAINMENT_THRESHOLD = 0.75
 DEFAULT_BBOX_CONTAINMENT_THRESHOLD = 0.75
@@ -457,9 +457,12 @@ def localize_detections(
 
 
 def save_capture(
-    bundle: CaptureBundle, capture_dir: Path
+    bundle: CaptureBundle,
+    capture_dir: Path,
+    *,
+    save_files: bool = True,
+    save_color: bool = False,
 ) -> tuple[Path, dict[str, Any]]:
-    capture_dir.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     stem = f"{timestamp}_frame{bundle.frame_id:06d}"
 
@@ -467,10 +470,6 @@ def save_capture(
     depth_png_path = capture_dir / f"{stem}_depth.png"
     depth_npy_path = capture_dir / f"{stem}_depth.npy"
     meta_path = capture_dir / f"{stem}_meta.json"
-
-    imwrite_checked(color_path, bundle.color_image)
-    imwrite_checked(depth_png_path, bundle.depth_image)
-    np.save(depth_npy_path, bundle.depth_image)
 
     metadata = {
         "color_image": str(color_path),
@@ -482,8 +481,15 @@ def save_capture(
         "host_receive_timestamp_ns": bundle.host_receive_timestamp_ns,
         "color_intrinsics": asdict(bundle.intrinsics),
     }
-    meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    append_capture_csv(capture_dir / "captures.csv", metadata)
+    if save_files or save_color:
+        capture_dir.mkdir(parents=True, exist_ok=True)
+    if save_color:
+        imwrite_checked(color_path, bundle.color_image)
+    if save_files:
+        imwrite_checked(depth_png_path, bundle.depth_image)
+        np.save(depth_npy_path, bundle.depth_image)
+        meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        append_capture_csv(capture_dir / "captures.csv", metadata)
     return meta_path, metadata
 
 
@@ -591,10 +597,10 @@ def make_artist_overlay(
 
         x0, y0, x1, y1 = [int(round(v)) for v in box]
         draw_corner_box(canvas, x0, y0, x1, y1, color)
-        label = f"{prompt} #{i} {score:.2f}"
-        if i < len(detections) and detections[i].point_xyz_m is not None:
-            x, y, z = detections[i].point_xyz_m
-            label += f" xyz=({x:.2f},{y:.2f},{z:.2f})m"
+        # Keep the SAM3 overlay readable: show only the object name and its
+        # instance number. Confidence and 3D coordinates remain available in
+        # memory for FlowPose/grasping, but are not drawn on this image.
+        label = f"{prompt}_{i}"
         draw_label(canvas, label, x0, max(18, y0 - 6), color)
         if i < len(detections) and detections[i].pixel_center_xy is not None:
             u, v = detections[i].pixel_center_xy

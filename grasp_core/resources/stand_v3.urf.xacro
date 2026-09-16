@@ -54,7 +54,7 @@
   <joint name="camera_joint" type="fixed">
     <parent link="base_link"/>
     <child link="camera_rgb_link"/>
-    <origin rpy="-2.535527 -0.157327 -1.705899" xyz="0.195155 0.18463 1.305996"/>
+    <origin rpy="-2.535527 -0.157327 -1.705899" xyz="0.225155 0.18463 1.305996"/>
   </joint>
 
   <!-- <link name="camera_left_link"/>

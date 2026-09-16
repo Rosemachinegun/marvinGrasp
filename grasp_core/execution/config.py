@@ -5,13 +5,12 @@ from __future__ import annotations
 import argparse
 from copy import copy
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 
-from grasp_core.config.resource_paths import (
-    DEFAULT_JOINT_TRAJECTORY_CSV_DIR as RESOURCE_JOINT_TRAJECTORY_CSV_DIR,
-    DEFAULT_TRAJECTORY_PLOT_DIR as RESOURCE_TRAJECTORY_PLOT_DIR,
+from grasp_core.config.trajectory_config import (
+    TrajectoryConfig,
+    TRAJECTORY_CONFIG,
 )
 
 
@@ -28,7 +27,7 @@ class GraspConfig:
     approach_axis: str = "z"
     approach_sign: float = -1.0
     use_flowpose_grasp_rotation: bool = False
-    use_cube_z_symmetry_grasp_policy: bool = True
+    use_box_z_symmetry_grasp_policy: bool = True
     ik_grasp_tcp_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
     ik_pregrasp_extra_offset_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
     ik_orientation_quat: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
@@ -46,6 +45,7 @@ class GraspConfig:
     target_trajectory_angular_speed_dps: float = 35.0
     final_approach_samples: int = 12
     final_approach_slowdown_ratio: float = 0.05
+    retry_x_jitter_m: float = 0.015
     grip_settle_sec: float = 0.0
     grip_post_confirm_hold_sec: float = 0.0
 
@@ -54,7 +54,7 @@ class GraspConfig:
         for field_name in (
             "force_object_z", "forced_object_z_m", "pregrasp_distance_m",
             "ik_target_stage", "approach_axis", "approach_sign",
-            "use_flowpose_grasp_rotation", "use_cube_z_symmetry_grasp_policy",
+            "use_flowpose_grasp_rotation", "use_box_z_symmetry_grasp_policy",
             "ik_grasp_tcp_offset_m", "ik_pregrasp_extra_offset_m",
             "ik_orientation_quat", "orientation_frame", "visualize_grasp_path",
             "save_joint_trajectory_csv", "show_raw_flowpose_window",
@@ -89,8 +89,8 @@ class PlaceConfig:
     left_xyz: tuple[float, float, float] = (0.45, 0.5, 0.75)
     right_xyz: tuple[float, float, float] = (0.45, -0.5, 0.75)
     object_overrides: dict[str, tuple[float, float, float]] | None = None
-    lift_height_m: float = 0.3
-    safe_z_m: float = 0.95
+    lift_height_m: float = 0.0
+    safe_z_m: float = 0.85
     target_hold_sec: float = 0.0
     home_after_release: bool = False
     home_hold_sec: float = 0.05
@@ -98,11 +98,10 @@ class PlaceConfig:
     right_orientation_xyz_rad: tuple[float, float, float] = (0.0, 0.4, 0.0)
     position_jitter_xyz_m: tuple[float, float, float] = (0.03, 0.03, 0.02)
     pitch_jitter_rad: float = 0.1
-    lift_height_jitter_m: float = 0.1
+    lift_height_jitter_m: float = 0.05
     approach_distance_m: float = 0.025
     approach_orientation_ratio: float = 0.78
-    final_approach_samples: int = 8
-    lift_ramp_ratio: float = 0.4
+    final_slowdown_ratio: float = 0.12
 
     def object_targets(self) -> dict[str, tuple[float, float, float]]:
         return self.object_overrides or {
@@ -118,17 +117,17 @@ class HomeConfig:
     right_xyz: tuple[float, float, float] = (0.25, -0.25, 0.83)
     safe_z_m: float = 0.95
     side_clearance_y_m: float = 0.28
-    tilt_z_left_deg: float = 0.0
-    tilt_z_right_deg: float = 0.0
-    tilt_y_left_deg: float = 0.0
-    tilt_y_right_deg: float = 0.0
+    tilt_z_left_deg: float = 0.2
+    tilt_z_right_deg: float = 0.2
+    tilt_y_left_deg: float = 20
+    tilt_y_right_deg: float = 20
     interrupted_position_tolerance_m: float = 0.006
     interrupted_angle_tolerance_deg: float = 2.0
     hold_sec: float = 0.0
     recovery_y_offset_min_m: float = 0.02
     recovery_y_offset_max_m: float = 0.04
-    recovery_x_offset_min_m: float = 0.1
-    recovery_x_offset_max_m: float = 0.2
+    recovery_x_offset_min_m: float = 0.15
+    recovery_x_offset_max_m: float = 0.20
     recovery_min_x_m: float = 0.30
     recovery_z_lift_min_m: float = 0.05
     recovery_z_lift_max_m: float = 0.1
@@ -153,24 +152,16 @@ class HomeConfig:
         return runtime_args
 
 
-@dataclass(frozen=True)
-class MotionConfig:
-    publish_rate_hz: float = 75.0
-    publish_sec: float = 0.5
-    step_m: float = 0.01
-    step_deg: float = 1.0
-    min_steps: int = 15
-    speed_mps: float = 0.15
-    angular_speed_dps: float = 35.0
-    plot_dir: Path = RESOURCE_TRAJECTORY_PLOT_DIR
-    joint_trajectory_csv_dir: Path = RESOURCE_JOINT_TRAJECTORY_CSV_DIR
+# Compatibility alias. Trajectory defaults are owned by the config layer so
+# planning does not need to import execution.config.
+MotionConfig = TrajectoryConfig
 
 
 EXECUTION_CONFIG = {
     "grasp": GraspConfig(),
     "place": PlaceConfig(),
     "home": HomeConfig(),
-    "motion": MotionConfig(),
+    "motion": TRAJECTORY_CONFIG,
 }
 GRASP_CONFIG = EXECUTION_CONFIG["grasp"]
 PLACE_CONFIG = EXECUTION_CONFIG["place"]

@@ -9,10 +9,8 @@ import numpy as np
 
 from grasp_core.core.math.pose import PickTemplateWaypoint
 from grasp_core.core.types.robot_target_pose import TargetObjectPose
+from grasp_core.core.math.object_axes import classify_box_shape
 from grasp_core.core.math.vector import horizontal_unit_vector, normalized
-from grasp_core.planning.grasp.policies.long_object import (
-    is_screwdriver_handle_object,
-)
 
 LEFT_GRASP_SECTOR_DEG = (60.0, 150.0)
 RIGHT_GRASP_SECTOR_DEG = (210.0, 300.0)
@@ -23,7 +21,7 @@ WORLD_Z_AXIS = np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
 
 
 @dataclass(frozen=True)
-class CubeZSymmetryCandidate:
+class BoxZSymmetryCandidate:
     """One FlowPose-equivalent cube pose rotated about the object's local Z axis."""
 
     name: str
@@ -32,23 +30,24 @@ class CubeZSymmetryCandidate:
 
 
 @dataclass(frozen=True)
-class CubeZSymmetrySelection:
+class BoxZSymmetrySelection:
     """Selected cube pose and metadata for logging/debugging."""
 
     target: TargetObjectPose
-    candidate: CubeZSymmetryCandidate
-    candidates: tuple[CubeZSymmetryCandidate, ...]
-    raw_candidate: CubeZSymmetryCandidate
+    candidate: BoxZSymmetryCandidate
+    candidates: tuple[BoxZSymmetryCandidate, ...]
+    raw_candidate: BoxZSymmetryCandidate
     desired_y_sign: float
+    box_shape: str | None = None
 
 
-def apply_cube_z_symmetry_grasp_policy(
+def apply_box_z_symmetry_grasp_policy(
     target: TargetObjectPose,
     *,
     hand: str,
     args,
     relative_pick_waypoints: list[PickTemplateWaypoint] | None = None,
-) -> CubeZSymmetrySelection | None:
+) -> BoxZSymmetrySelection | None:
     """Select a FlowPose-equivalent pose for the active grasp policy.
 
     The pose is made Z-up first.  Generic objects use the local -X gripper
@@ -57,9 +56,9 @@ def apply_cube_z_symmetry_grasp_policy(
     """
 
     del relative_pick_waypoints
-    if not bool(getattr(args, "use_cube_z_symmetry_grasp_policy", False)):
+    if not bool(getattr(args, "use_box_z_symmetry_grasp_policy", False)):
         return None
-    if is_screwdriver_handle_object(target.label):
+    if classify_box_shape(target.size) != "cube":
         return None
     object_pose = np.asarray(target.base_pose, dtype=np.float64)
     if object_pose.shape != (4, 4) or not np.all(np.isfinite(object_pose)):
@@ -91,12 +90,13 @@ def apply_cube_z_symmetry_grasp_policy(
         size=target.size.copy() if isinstance(target.size, np.ndarray) else target.size,
         score=target.score,
     )
-    return CubeZSymmetrySelection(
+    return BoxZSymmetrySelection(
         target=adjusted_target,
         candidate=best,
         candidates=candidates,
         raw_candidate=raw,
         desired_y_sign=desired_y_sign,
+        box_shape=classify_box_shape(target.size),
     )
 
 
@@ -117,21 +117,21 @@ def pose_with_world_z_axis(object_pose: np.ndarray) -> np.ndarray:
     return pose
 
 
-def make_candidates(object_pose: np.ndarray) -> list[CubeZSymmetryCandidate]:
+def make_candidates(object_pose: np.ndarray) -> list[BoxZSymmetryCandidate]:
     turns = (
         ("raw", 0.0),
         ("rz+90", 90.0),
         ("rz180", 180.0),
         ("rz-90", -90.0),
     )
-    candidates: list[CubeZSymmetryCandidate] = []
+    candidates: list[BoxZSymmetryCandidate] = []
     for name, angle_deg in turns:
         candidate_pose = object_pose.copy()
         candidate_pose[:3, :3] = (
             object_pose[:3, :3] @ local_z_rotation_deg(angle_deg)
         )
         candidates.append(
-            CubeZSymmetryCandidate(
+            BoxZSymmetryCandidate(
                 name=name,
                 pose=candidate_pose,
                 angle_deg=angle_deg,
@@ -141,11 +141,11 @@ def make_candidates(object_pose: np.ndarray) -> list[CubeZSymmetryCandidate]:
 
 
 def select_best_candidate(
-    candidates: tuple[CubeZSymmetryCandidate, ...],
+    candidates: tuple[BoxZSymmetryCandidate, ...],
     sector: tuple[float, float],
     fallback_angle_deg: float,
     desired_y_sign: float,
-) -> CubeZSymmetryCandidate:
+) -> BoxZSymmetryCandidate:
     same_side_candidates = tuple(
         candidate
         for candidate in candidates

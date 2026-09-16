@@ -19,7 +19,7 @@ class GripSignalDefaults:
     post_confirm_hold_sec: float = 0.0
     lift_hold_sec: float = 0.0
     retry_max_attempts: int = 1
-    drop_close_delta: int = 50
+    drop_close_delta: int = 80
     drop_poll_interval: float = 0.05
 
 
@@ -47,8 +47,8 @@ class GripperDefaults:
     right_min_pos: int = 100
     left_max_pos: int = 1000
     right_max_pos: int = 1000
-    left_grip_speed: int = 100
-    right_grip_speed: int = 100
+    left_grip_speed: int = 50
+    right_grip_speed: int = 50
     left_grip_torque: int = 100
     right_grip_torque: int = 100
     left_hold_torque: int = 100

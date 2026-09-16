@@ -12,24 +12,20 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import argparse
-from copy import copy
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 import numpy as np
 
-from grasp_core.core.types.robot_target_pose import TargetObjectPose, matrix_to_quaternion
+from grasp_core.core.types.robot_target_pose import TargetObjectPose
 from grasp_core.communication.gripper_signal import (
     gripper_receiver_args,
     send_gripper_signal,
 )
-from grasp_core.planning.grasp.grasp_pose import make_gripper_target_pose
 from grasp_core.planning.grasp.policies.ribbon import assume_grasp_success
-from grasp_core.planning.trajectory.bezier import smooth_bezier_arc_waypoints
 from grasp_core.core.math.pose import (
     PickTemplateWaypoint,
-    PoseWaypoint,
     checked_position,
     format_quat,
     format_xyz,
@@ -38,11 +34,8 @@ from grasp_core.core.math.pose import (
     ik_wrist_orientation_quat,
     log_grasp_pose_plan,
     normalize_quaternion,
-    pose_from_position_quaternion,
     select_ik_hand,
-    slerp_quaternion,
 )
-from grasp_core.core.math.easing import smootherstep
 from grasp_core.execution.motion_executor import (
     RequestIkTargetPublisher,
     read_current_tool_pose,
@@ -53,11 +46,30 @@ from grasp_core.execution.skill_runtime import SkillRuntime
 from grasp_core.execution.skills.home import HOME_CONFIG
 from grasp_core.execution.config import GRASP_CONFIG, GRIP_MIN_LIMIT_TOKENS, GraspConfig
 from grasp_core.tools.trajectory_diagnostics import save_request_ik_grasp_path_artifacts
-from grasp_core.planning.grasp.tool_pick_templates import (
-    build_pick_template_waypoints,
+from grasp_core.planning.grasp.planner import (
+    GraspPlan,
+    UnifiedGraspPlanner,
     pick_template_for_target,
 )
 GripConfirmedCallback = Callable[[str, str], None]
+
+def _apply_retry_x_jitter(
+    target: TargetObjectPose,
+    jitter_m: float,
+) -> TargetObjectPose:
+    """Return a target with a small positive base-frame X retry offset."""
+    jitter_m = max(float(jitter_m), 0.0)
+    offset_m = float(np.random.uniform(0.0, jitter_m))
+    base_pose = np.asarray(target.base_pose, dtype=np.float64).copy()
+    base_pose[0, 3] += offset_m
+    print(
+        f"[grasp] retry target X offset={offset_m:+.4f}m "
+        f"(+0.000..{jitter_m:+.3f}m, forward)",
+        flush=True,
+    )
+    return replace(target, base_pose=base_pose)
+
+
 @dataclass(frozen=True)
 class GraspTarget:
     """Resolved grasp target and the selected planning mode."""
@@ -71,30 +83,16 @@ class GraspTarget:
     used_pick_template: bool
 
 
-@dataclass(frozen=True)
-class GraspPlan:
-    """Executable phases of one grasp action."""
-
-    approach_waypoints: list[PoseWaypoint]
-    final_approach_waypoints: list[PoseWaypoint]
-    grip_position: np.ndarray
-    grip_orientation: tuple[float, float, float, float]
-    final_position: np.ndarray
-    final_orientation: tuple[float, float, float, float]
-    gripper_pose: np.ndarray
-    template: np.ndarray | None
-    fallback_reason: str | None
-    used_pick_template: bool
-    grip_waypoint_index: int | None
-    grip_required: bool
-    grip_state: float | None
-
-
 class GraspPlanner:
-    """Own target resolution and grasp trajectory construction."""
+    """Execution adapter around the single UnifiedGraspPlanner entry point.
+
+    Motion feedback is kept here because it depends on the ROS/IK publisher;
+    target pose and trajectory planning live in UnifiedGraspPlanner.
+    """
 
     def __init__(self, config: GraspConfig | None = None) -> None:
         self.config = config or GRASP_CONFIG
+        self.unified_planner = UnifiedGraspPlanner()
 
     def controlled_args(self, args: argparse.Namespace) -> argparse.Namespace:
         return self.config.controlled_args(args)
@@ -105,6 +103,7 @@ class GraspPlanner:
         hand: str,
         args: argparse.Namespace,
     ) -> tuple[np.ndarray, tuple[float, float, float, float], str]:
+        """Read the hardware start pose, with remembered/home fallback."""
         args = self.controlled_args(args)
         measured_reader = getattr(
             getattr(publisher, "client", None),
@@ -132,240 +131,6 @@ class GraspPlanner:
             start_source,
         )
 
-    def build_template_target(
-        self,
-        target: TargetObjectPose,
-        relative_pick_waypoints: list[PickTemplateWaypoint],
-        args: argparse.Namespace,
-        hand: str,
-    ) -> list[PickTemplateWaypoint]:
-        args = self.controlled_args(args)
-        return build_pick_template_waypoints(
-            target,
-            relative_pick_waypoints,
-            args,
-            hand=hand,
-        )
-
-    def strip_gripper_states(
-        self,
-        waypoints: list[PickTemplateWaypoint],
-    ) -> list[PoseWaypoint]:
-        """Convert template points to pose-only waypoints."""
-        return [
-            (position, orientation)
-            for position, orientation, _gripper_state in waypoints
-        ]
-
-    def build_computed_target(
-        self,
-        target: TargetObjectPose,
-        args: argparse.Namespace,
-        hand: str,
-    ) -> tuple[np.ndarray, np.ndarray | None, str | None]:
-        args = self.controlled_args(args)
-        return make_gripper_target_pose(target, args, hand=hand)
-
-    def build_waypoints(
-        self,
-        start_position: np.ndarray,
-        start_orientation: tuple[float, float, float, float],
-        end_position: np.ndarray,
-        end_orientation: tuple[float, float, float, float],
-        args: argparse.Namespace,
-    ) -> list[PoseWaypoint]:
-        args = self.controlled_args(args)
-        return smooth_bezier_arc_waypoints(
-            start_position,
-            start_orientation,
-            end_position,
-            end_orientation,
-            args,
-            lift_arc=False,
-        )
-
-    def build_final_approach_waypoints(
-        self,
-        start_position: np.ndarray,
-        start_orientation: tuple[float, float, float, float],
-        end_position: np.ndarray,
-        end_orientation: tuple[float, float, float, float],
-    ) -> list[PoseWaypoint]:
-        """Build the dense, eased final approach used before gripping."""
-        sample_count = max(int(self.config.final_approach_samples), 1)
-        slowdown_ratio = float(
-            np.clip(self.config.final_approach_slowdown_ratio, 0.0, 1.0)
-        )
-        slowdown_start = 1.0 - slowdown_ratio
-        waypoints: list[PoseWaypoint] = []
-        for index in range(1, sample_count + 1):
-            progress = index / sample_count
-            if slowdown_ratio <= 0.0 or progress <= slowdown_start:
-                alpha = progress
-            else:
-                slowdown_progress = (progress - slowdown_start) / slowdown_ratio
-                alpha = slowdown_start + slowdown_ratio * smootherstep(
-                    slowdown_progress
-                )
-            waypoints.append(
-                (
-                    start_position + (end_position - start_position) * alpha,
-                    slerp_quaternion(start_orientation, end_orientation, alpha),
-                )
-            )
-        return waypoints
-
-    def build_template_plan(
-        self,
-        target: TargetObjectPose,
-        relative_pick_waypoints: list[PickTemplateWaypoint],
-        start_position: np.ndarray,
-        start_orientation: tuple[float, float, float, float],
-        args: argparse.Namespace,
-        hand: str,
-    ) -> GraspPlan:
-        pick_waypoints = self.build_template_target(
-            target, relative_pick_waypoints, args, hand
-        )
-        pose_waypoints = self.strip_gripper_states(pick_waypoints)
-        grip_index = self.grip_waypoint_index(pick_waypoints)
-        grip_state = (
-            float(pick_waypoints[grip_index][2])
-            if grip_index is not None
-            else None
-        )
-        if grip_index is None:
-            final_position, final_orientation = pose_waypoints[-1]
-            approach_waypoints = self.build_waypoints(
-                start_position,
-                start_orientation,
-                final_position,
-                final_orientation,
-                args,
-            )
-            grip_position, grip_orientation = final_position, final_orientation
-            final_approach_waypoints: list[PoseWaypoint] = []
-        else:
-            grip_position, grip_orientation = pose_waypoints[grip_index]
-            if grip_index > 0:
-                pregrasp_position, pregrasp_orientation = pose_waypoints[grip_index - 1]
-                approach_waypoints = self.build_waypoints(
-                    start_position,
-                    start_orientation,
-                    pregrasp_position,
-                    pregrasp_orientation,
-                    args,
-                )
-                final_approach_waypoints = self.build_final_approach_waypoints(
-                    pregrasp_position,
-                    pregrasp_orientation,
-                    grip_position,
-                    grip_orientation,
-                )
-            else:
-                approach_waypoints = self.build_waypoints(
-                    start_position,
-                    start_orientation,
-                    grip_position,
-                    grip_orientation,
-                    args,
-                )
-                final_approach_waypoints = []
-            final_position, final_orientation = grip_position, grip_orientation
-        return GraspPlan(
-            approach_waypoints=approach_waypoints,
-            final_approach_waypoints=final_approach_waypoints,
-            grip_position=checked_position(grip_position).copy(),
-            grip_orientation=normalize_quaternion(grip_orientation),
-            final_position=checked_position(final_position).copy(),
-            final_orientation=normalize_quaternion(final_orientation),
-            gripper_pose=pose_from_position_quaternion(final_position, final_orientation),
-            template=None,
-            fallback_reason=None,
-            used_pick_template=True,
-            grip_waypoint_index=grip_index,
-            grip_required=grip_index is not None,
-            grip_state=grip_state,
-        )
-
-    def build_computed_plan(
-        self,
-        target: TargetObjectPose,
-        start_position: np.ndarray,
-        start_orientation: tuple[float, float, float, float],
-        args: argparse.Namespace,
-        hand: str,
-    ) -> GraspPlan:
-        planning_args = self.controlled_args(args)
-        pregrasp_pose, template, fallback_reason = self.build_computed_target(
-            target, planning_args, hand
-        )
-        grasp_args = copy(planning_args)
-        grasp_args.ik_target_stage = "grasp"
-        gripper_pose, _grasp_template, _grasp_fallback_reason = (
-            self.build_computed_target(target, grasp_args, hand)
-        )
-        pregrasp_position = pregrasp_pose[:3, 3].copy()
-        pregrasp_orientation = matrix_to_quaternion(pregrasp_pose)
-        position = gripper_pose[:3, 3].copy()
-        orientation = matrix_to_quaternion(gripper_pose)
-        final_approach_waypoints: list[PoseWaypoint] = []
-        if planning_args.ik_target_stage == "pregrasp":
-            final_approach_waypoints = self.build_final_approach_waypoints(
-                pregrasp_position,
-                pregrasp_orientation,
-                position,
-                orientation,
-            )
-        return GraspPlan(
-            approach_waypoints=self.build_waypoints(
-                start_position,
-                start_orientation,
-                pregrasp_position,
-                pregrasp_orientation,
-                planning_args,
-            ),
-            final_approach_waypoints=final_approach_waypoints,
-            grip_position=position.copy(),
-            grip_orientation=orientation,
-            final_position=position.copy(),
-            final_orientation=orientation,
-            gripper_pose=gripper_pose,
-            template=template,
-            fallback_reason=fallback_reason,
-            used_pick_template=False,
-            grip_waypoint_index=None,
-            grip_required=True,
-            grip_state=None,
-        )
-
-    def grip_waypoint_index(
-        self,
-        waypoints: list[PickTemplateWaypoint],
-    ) -> int | None:
-        if not waypoints:
-            return None
-        candidates = [
-            index
-            for index, (_position, _orientation, gripper_state) in enumerate(waypoints)
-            if float(gripper_state) >= 0.5
-        ]
-        if candidates:
-            return min(candidates, key=lambda index: float(waypoints[index][0][2]))
-        fallback_index = min(
-            range(len(waypoints)),
-            key=lambda index: float(waypoints[index][0][2]),
-        )
-        position = checked_position(waypoints[fallback_index][0])
-        print(
-            "[tool_template] WARNING no gripper_state>=0.5 in pick template; "
-            "defaulting grip trigger to lowest waypoint "
-            f"index={fallback_index} "
-            f"xyz=({position[0]:.4f}, {position[1]:.4f}, {position[2]:.4f})",
-            flush=True,
-        )
-        return fallback_index
-
 
 GRASP_PLANNER = GraspPlanner()
 
@@ -383,6 +148,8 @@ def execute_grasp(
     targets: list[TargetObjectPose],
     pick_templates: dict[str, dict[str, list[PickTemplateWaypoint]]],
     args: argparse.Namespace,
+    *,
+    retry: bool = False,
 ) -> str:
     if publisher is None:
         status = request_ik_publisher_unavailable_status(args)
@@ -396,6 +163,9 @@ def execute_grasp(
     index = min(max(int(args.ik_target_index), 0), len(targets) - 1)
     target = targets[index]
     hand = select_ik_hand(target.base_xyz, args.ik_hand)
+    planner = GRASP_PLANNER
+    if retry:
+        target = _apply_retry_x_jitter(target, planner.config.retry_x_jitter_m)
     accept_without_contact_check = assume_grasp_success(target.label)
     if accept_without_contact_check:
         print(
@@ -404,7 +174,6 @@ def execute_grasp(
             flush=True,
         )
     grip_result: dict[str, Any] = {"confirmed": False, "hand": None, "status": ""}
-    planner = GRASP_PLANNER
     # Grasp motion values are owned by GraspConfig.  Keep external args only
     # for runtime dependencies such as ROS topics, target selection and paths.
     args = planner.controlled_args(args)
@@ -439,7 +208,7 @@ def execute_grasp(
                 f"{args.ik_downward_tilt_frame}",
                 flush=True,
             )
-            plan = planner.build_template_plan(
+            plan = planner.unified_planner.build_template_plan(
                 target,
                 relative_pick_waypoints,
                 start_position,
@@ -473,7 +242,7 @@ def execute_grasp(
             )
     if plan is None:
         try:
-            plan = planner.build_computed_plan(
+            plan = planner.unified_planner.build_computed_plan(
                 target,
                 start_position,
                 start_orientation,
@@ -493,35 +262,19 @@ def execute_grasp(
             return status
 
     assert plan is not None
-    count = publish_path(
-        publisher,
-        hand,
-        plan.approach_waypoints,
-        args,
-        start_position_xyz=start_position,
-        start_orientation_xyzw=start_orientation,
-        final_hold_sec=0.0,
-        min_steps=1,
-    )
-    if plan.final_approach_waypoints:
-        # ``publish_smooth_path`` normally chooses one sample per short
-        # waypoint segment.  That would erase the extra geometric points
-        # above, so force additional controller samples in this phase.  Use
-        # the explicit final approach sample count as the density control.
-        final_min_steps = max(int(GRASP_PLANNER.config.final_approach_samples), 1)
-        count += publish_path(
-            publisher,
-            hand,
-            plan.final_approach_waypoints,
-            args,
-            start_position_xyz=plan.approach_waypoints[-1][0],
-            start_orientation_xyzw=plan.approach_waypoints[-1][1],
-            final_hold_sec=0.0,
-            min_steps=final_min_steps,
-        )
-    if plan.grip_required:
+    path_waypoints = plan.approach_waypoints + plan.final_approach_waypoints
+    grip_error: GripFailedMinLimit | GripCommandFailed | None = None
+
+    def grip_after_final_waypoint(
+        _publisher: RequestIkTargetPublisher,
+        _hand: str,
+        _position: np.ndarray,
+        _orientation: tuple[float, float, float, float],
+    ) -> int:
+        """Close the gripper after the single combined trajectory finishes."""
+        nonlocal grip_error
         try:
-            count += execute_grip_at_pose(
+            return execute_grip_at_pose(
                 publisher,
                 hand,
                 plan.grip_position,
@@ -534,16 +287,36 @@ def execute_grasp(
                     status=grip_status,
                 ),
             )
-        except GripFailedMinLimit as exc:
-            publisher.finish_joint_trajectory_csv_recording()
-            status = f"GRIP_FAILED_MIN_LIMIT hand={hand}: {exc}"
-            print(f"[grasp] {status}", flush=True)
-            return status
-        except GripCommandFailed as exc:
-            publisher.finish_joint_trajectory_csv_recording()
-            status = f"GRIP_COMMAND_FAILED hand={hand}: {exc}"
-            print(f"[grasp] {status}", flush=True)
-            return status
+        except (GripFailedMinLimit, GripCommandFailed) as exc:
+            grip_error = exc
+            publisher.request_stop()
+            return 0
+
+    after_waypoint = (
+        {len(path_waypoints) - 1: grip_after_final_waypoint}
+        if plan.grip_required and path_waypoints
+        else None
+    )
+    count = publish_path(
+        publisher,
+        hand,
+        path_waypoints,
+        args,
+        start_position_xyz=start_position,
+        start_orientation_xyzw=start_orientation,
+        on_after_waypoint=after_waypoint,
+        final_hold_sec=0.0,
+        min_steps=1,
+        final_slowdown_ratio=GRASP_PLANNER.config.final_approach_slowdown_ratio,
+    )
+    if grip_error is not None:
+        publisher.finish_joint_trajectory_csv_recording()
+        if isinstance(grip_error, GripFailedMinLimit):
+            status = f"GRIP_FAILED_MIN_LIMIT hand={hand}: {grip_error}"
+        else:
+            status = f"GRIP_COMMAND_FAILED hand={hand}: {grip_error}"
+        print(f"[grasp] {status}", flush=True)
+        return status
 
     position = plan.final_position
     orientation = plan.final_orientation
@@ -674,5 +447,15 @@ class GraspSkill(SkillRuntime):
         self,
         targets: list[TargetObjectPose],
         pick_templates: dict[str, dict[str, list[PickTemplateWaypoint]]],
+        *,
+        retry: bool = False,
     ) -> str:
+        if retry:
+            return self._executor(
+                self.publisher,
+                targets,
+                pick_templates,
+                self.args,
+                retry=True,
+            )
         return self._executor(self.publisher, targets, pick_templates, self.args)

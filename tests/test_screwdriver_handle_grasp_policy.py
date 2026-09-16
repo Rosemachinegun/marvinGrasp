@@ -5,25 +5,25 @@ import numpy as np
 from grasp_core.core.math.pose import quaternion_to_rotation_matrix
 from grasp_core.core.math.object_axes import canonical_long_object_pose
 from grasp_core.core.types.robot_target_pose import TargetObjectPose
-from grasp_core.planning.grasp.grasp_pose import make_gripper_target_pose
-from grasp_core.planning.grasp.tool_pick_templates import build_pick_template_waypoints
+from grasp_core.planning.grasp.planner import make_gripper_target_pose
+from grasp_core.planning.grasp.planner import build_pick_template_waypoints
 import grasp_core.planning.grasp.policies.long_object as screwdriver_policy
 from grasp_core.planning.grasp.policies.long_object import (
     LongObjectGraspPolicy,
     approach_axis_from_orientation,
-    build_screwdriver_handle_pick_waypoints,
+    build_cuboid_pick_waypoints,
     closing_axis_from_orientation,
-    make_screwdriver_handle_gripper_pose,
-    screwdriver_handle_long_axis,
-    screwdriver_handle_long_axis_index,
-    screwdriver_handle_z_up_object_pose,
+    make_cuboid_gripper_pose,
+    cuboid_long_axis,
+    cuboid_long_axis_index,
+    cuboid_z_up_object_pose,
 )
 
 
 def test_screwdriver_handle_keeps_y_tilt_and_closing_axis_is_lateral_left() -> None:
     target = make_screwdriver_target(long_axis=np.array([1.0, 1.0, 0.4]))
 
-    result = make_screwdriver_handle_gripper_pose(
+    result = make_cuboid_gripper_pose(
         target,
         args(ik_downward_tilt_y_left_deg=45.0),
         hand="left",
@@ -42,7 +42,7 @@ def test_screwdriver_handle_keeps_y_tilt_and_closing_axis_is_lateral_left() -> N
 def test_screwdriver_handle_pose_selects_right_halfspace_side() -> None:
     target = make_screwdriver_target(long_axis=np.array([1.0, 1.0, 0.0]))
 
-    result = make_screwdriver_handle_gripper_pose(
+    result = make_cuboid_gripper_pose(
         target,
         args(ik_downward_tilt_y_right_deg=45.0),
         hand="right",
@@ -60,7 +60,7 @@ def test_screwdriver_handle_pose_selects_right_halfspace_side() -> None:
 def test_screwdriver_handle_right_hand_avoids_equivalent_180deg_wrist_flip() -> None:
     target = make_screwdriver_target(long_axis=np.array([1.0, 0.0, 0.0]))
 
-    result = make_screwdriver_handle_gripper_pose(
+    result = make_cuboid_gripper_pose(
         target,
         args(
             ik_downward_tilt_right_deg=45.0,
@@ -78,7 +78,7 @@ def test_screwdriver_handle_right_hand_avoids_equivalent_180deg_wrist_flip() -> 
 def test_screwdriver_handle_right_hand_aligns_local_y_closing_axis() -> None:
     target = make_screwdriver_target(long_axis=np.array([-1.0, 1.0, 0.0]))
 
-    result = make_screwdriver_handle_gripper_pose(
+    result = make_cuboid_gripper_pose(
         target,
         args(
             ik_downward_tilt_right_deg=45.0,
@@ -110,7 +110,7 @@ def test_screwdriver_handle_template_waypoints_keep_y_tilt_ignore_yaml_quaternio
         ),
     ]
 
-    waypoints = build_screwdriver_handle_pick_waypoints(
+    waypoints = build_cuboid_pick_waypoints(
         target,
         relative_waypoints,
         args(ik_downward_tilt_y_left_deg=45.0),
@@ -118,8 +118,8 @@ def test_screwdriver_handle_template_waypoints_keep_y_tilt_ignore_yaml_quaternio
     )
 
     assert waypoints is not None
-    object_pose = screwdriver_handle_z_up_object_pose(target.base_pose, target.size)
-    long_axis = screwdriver_handle_long_axis(target.base_pose, target.size)
+    object_pose = cuboid_z_up_object_pose(target.base_pose, target.size)
+    long_axis = cuboid_long_axis(target.base_pose, target.size)
     for position, orientation, _gripper_value in waypoints:
         rotation = quaternion_to_rotation_matrix(orientation)
         assert float(approach_axis_from_orientation(rotation) @ object_pose[:3, 2]) > 0.70
@@ -140,13 +140,13 @@ def test_screwdriver_handle_waypoint_x_long_axis_offset_is_hand_independent() ->
         ),
     ]
 
-    left_waypoints = build_screwdriver_handle_pick_waypoints(
+    left_waypoints = build_cuboid_pick_waypoints(
         target,
         relative_waypoints,
         args(ik_downward_tilt_left_deg=-45.0),
         hand="left",
     )
-    right_waypoints = build_screwdriver_handle_pick_waypoints(
+    right_waypoints = build_cuboid_pick_waypoints(
         target,
         relative_waypoints,
         args(ik_downward_tilt_right_deg=45.0),
@@ -160,7 +160,7 @@ def test_screwdriver_handle_waypoint_x_long_axis_offset_is_hand_independent() ->
         right_waypoints[0][0],
     )
 
-    object_pose = screwdriver_handle_z_up_object_pose(target.base_pose, target.size)
+    object_pose = cuboid_z_up_object_pose(target.base_pose, target.size)
     expected_position = (
         object_pose
         @ np.array([-0.05, 0.0, 0.03, 1.0], dtype=np.float64)
@@ -186,8 +186,8 @@ def test_screwdriver_handle_integrates_with_global_y_tilt_but_custom_z_yaw() -> 
         hand="left",
     )
 
-    object_pose = screwdriver_handle_z_up_object_pose(target.base_pose, target.size)
-    long_axis = screwdriver_handle_long_axis(target.base_pose, target.size)
+    object_pose = cuboid_z_up_object_pose(target.base_pose, target.size)
+    long_axis = cuboid_long_axis(target.base_pose, target.size)
     assert fallback_reason == "screwdriver_handle_z_yaw_policy"
     assert (
         float(approach_axis_from_orientation(gripper_pose[:3, :3]) @ object_pose[:3, 2])
@@ -213,11 +213,11 @@ def test_screwdriver_handle_uses_z_up_local_y_as_long_axis() -> None:
     )
     size = np.array([0.0444459393620491, 0.020002959296107292, 0.10555826872587204])
 
-    assert screwdriver_handle_long_axis_index(size) == 0
+    assert cuboid_long_axis_index(size) == 0
     pose = canonical_long_object_pose(pose, source_long_axis=0)[0]
-    long_axis = screwdriver_handle_long_axis(pose, size)
+    long_axis = cuboid_long_axis(pose, size)
 
-    z_up_pose = screwdriver_handle_z_up_object_pose(pose, size)
+    z_up_pose = cuboid_z_up_object_pose(pose, size)
     expected = z_up_pose[:3, 0]
     np.testing.assert_allclose(long_axis, expected)
 
@@ -241,7 +241,7 @@ def test_screwdriver_handle_real_capture_closing_x_is_not_long_axis() -> None:
         size=size,
     )
 
-    result = make_screwdriver_handle_gripper_pose(
+    result = make_cuboid_gripper_pose(
         target,
         args(
             ik_downward_tilt_right_deg=45.0,
@@ -289,7 +289,7 @@ def test_screwdriver_handle_captures_close_perpendicular_to_flowpose_x_long_axis
             size=np.array([0.03, 0.02, 0.10], dtype=np.float64),
         )
 
-        result = make_screwdriver_handle_gripper_pose(
+        result = make_cuboid_gripper_pose(
             target,
             args(
                 ik_downward_tilt_right_deg=45.0,
@@ -320,7 +320,7 @@ def test_screwdriver_handle_captures_close_perpendicular_to_flowpose_x_long_axis
 def test_pen_uses_screwdriver_handle_long_object_policy_by_default() -> None:
     target = make_screwdriver_target(long_axis=np.array([1.0, 0.0, 0.0]), label="pen")
 
-    result = make_screwdriver_handle_gripper_pose(
+    result = make_cuboid_gripper_pose(
         target,
         args(
             ik_downward_tilt_right_deg=45.0,
@@ -356,7 +356,7 @@ def test_pen_closing_axis_can_be_configured_to_policy_y(monkeypatch) -> None:
         ),
     )
 
-    result = make_screwdriver_handle_gripper_pose(
+    result = make_cuboid_gripper_pose(
         target,
         args(
             ik_downward_tilt_right_deg=45.0,

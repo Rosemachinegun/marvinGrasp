@@ -28,6 +28,7 @@ from grasp_core.perception.flowpose_pipeline import (
     resolve_existing_path,
 )
 from grasp_core.core.types.robot_target_pose import TargetObjectPose, make_child_frame_ids, make_target_object_pose
+from grasp_core.planning.grasp.target_order import reorder_targets_for_grasp
 from grasp_core.tools.request_ik_ui import (
     draw_base_target_overlay,
     print_base_target_objects,
@@ -117,6 +118,16 @@ def collect_flowpose_results(
             latest_overlay = flowpose_result.visualization
             latest_base_targets = build_base_target_objects(
                 flowpose_result.objects, base_to_camera
+            )
+            latest_base_targets = reorder_targets_for_grasp(
+                latest_base_targets,
+                output_dir=None,
+                stem=flowpose_result.result_path.stem,
+                cluster_eps_m=args.target_order_cluster_eps_m,
+                cluster_use_z=args.target_order_cluster_use_z,
+                singleton_first=args.target_order_singleton_first,
+                distance_axis=args.target_order_distance_axis,
+                max_target_volume_m3=args.target_order_max_volume_m3,
             )
             latest_base_targets = apply_forced_object_z_to_targets(
                 latest_base_targets,

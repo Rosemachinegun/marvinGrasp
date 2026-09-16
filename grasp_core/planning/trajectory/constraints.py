@@ -8,7 +8,8 @@ import numpy as np
 from grasp_core.core.math.pose import (
     PoseWaypoint,
 )
-from grasp_core.execution.config import (
+from grasp_core.config.trajectory_config import (
+    TrajectoryConfig,
     DEFAULT_TARGET_PUBLISH_RATE_HZ,
     DEFAULT_TARGET_TRAJECTORY_ANGULAR_SPEED_DPS,
     DEFAULT_TARGET_TRAJECTORY_SPEED_MPS,
@@ -19,38 +20,36 @@ from grasp_core.planning.trajectory.interpolation import (
     PreparedPosePath,
     _evaluate_prepared_pose,
     prepare_pose_path,
-    startup_ramp_alpha,
 )
 from grasp_core.planning.trajectory.orientation import quaternion_step_rad
 
 
-def effective_trajectory_step_limits(args: argparse.Namespace) -> tuple[float, float]:
+def effective_trajectory_step_limits(
+    config: TrajectoryConfig | argparse.Namespace,
+) -> tuple[float, float]:
     """Combine configured geometric step limits with speed/rate limits."""
 
+    if isinstance(config, argparse.Namespace):
+        config = TrajectoryConfig.from_args(config)
+
     publish_rate_hz = max(
-        float(getattr(args, "target_publish_rate_hz", DEFAULT_TARGET_PUBLISH_RATE_HZ)),
+        float(config.publish_rate_hz or DEFAULT_TARGET_PUBLISH_RATE_HZ),
         0.1,
     )
     configured_step_m = max(
-        float(getattr(args, "target_trajectory_step_m", DEFAULT_TARGET_TRAJECTORY_STEP_M)),
+        float(config.step_m or DEFAULT_TARGET_TRAJECTORY_STEP_M),
         1e-4,
     )
     configured_step_deg = max(
-        float(getattr(args, "target_trajectory_step_deg", DEFAULT_TARGET_TRAJECTORY_STEP_DEG)),
+        float(config.step_deg or DEFAULT_TARGET_TRAJECTORY_STEP_DEG),
         0.1,
     )
     speed_mps = max(
-        float(getattr(args, "target_trajectory_speed_mps", DEFAULT_TARGET_TRAJECTORY_SPEED_MPS)),
+        float(config.speed_mps or DEFAULT_TARGET_TRAJECTORY_SPEED_MPS),
         1e-4,
     )
     angular_speed_dps = max(
-        float(
-            getattr(
-                args,
-                "target_trajectory_angular_speed_dps",
-                DEFAULT_TARGET_TRAJECTORY_ANGULAR_SPEED_DPS,
-            )
-        ),
+        float(config.angular_speed_dps or DEFAULT_TARGET_TRAJECTORY_ANGULAR_SPEED_DPS),
         0.1,
     )
     return min(configured_step_m, speed_mps / publish_rate_hz), min(
@@ -83,15 +82,12 @@ def refine_segment_steps_for_limits(
     for _ in range(max_iterations):
         changed = False
         for segment_index, steps in enumerate(refined_steps):
-            ramp_fraction = min(10.0 / float(max(steps, 1)), 1.0)
             max_linear_step = 0.0
             max_angular_step = 0.0
             previous_position = positions[segment_index]
             previous_orientation = orientations[segment_index]
             for step in range(1, steps + 1):
                 alpha = float(step) / float(steps)
-                if segment_index == 0:
-                    alpha = startup_ramp_alpha(alpha, ramp_fraction)
                 position, orientation = _evaluate_prepared_pose(
                     path, segment_index, alpha
                 )
@@ -122,4 +118,37 @@ def refine_segment_steps_for_limits(
     return refined_steps
 
 
-__all__ = ["effective_trajectory_step_limits", "refine_segment_steps_for_limits"]
+def segment_steps_for_path(
+    path: PreparedPosePath,
+    *,
+    max_step_m: float,
+    max_step_deg: float,
+    min_steps: int = 1,
+) -> list[int]:
+    """Allocate samples by curve length so adjacent segments share speed."""
+    if not path.segment_lengths:
+        return []
+
+    linear_limit = max(float(max_step_m), 1e-4)
+    angular_limit = np.deg2rad(max(float(max_step_deg), 0.1))
+    minimum = max(int(min_steps), 1)
+    steps: list[int] = []
+    for index, length in enumerate(path.segment_lengths):
+        angle = quaternion_step_rad(
+            path.orientations[index], path.orientations[index + 1]
+        )
+        steps.append(
+            max(
+                minimum,
+                int(np.ceil(float(length) / linear_limit)),
+                int(np.ceil(angle / angular_limit)),
+            )
+        )
+    return steps
+
+
+__all__ = [
+    "effective_trajectory_step_limits",
+    "refine_segment_steps_for_limits",
+    "segment_steps_for_path",
+]

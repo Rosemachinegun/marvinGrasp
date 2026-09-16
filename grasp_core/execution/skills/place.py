@@ -32,10 +32,14 @@ from grasp_core.core.math.pose import (
     slerp_quaternion,
 )
 from grasp_core.core.types.robot_target_pose import matrix_to_quaternion
-from grasp_core.core.math.easing import smootherstep
 from grasp_core.planning.trajectory.interpolation import cubic_bezier_position
-from grasp_core.planning.trajectory.bezier import smooth_bezier_arc_waypoints
+from grasp_core.planning.trajectory.bezier import (
+    smooth_bezier_arc_waypoints,
+)
 
+
+# Compatibility export for older diagnostic/test callers.  Place itself uses
+# the direct Bézier planner path and does not call this low-level helper.
 @dataclass(frozen=True)
 class PlaceTarget:
     """Resolved target used by one Place trajectory."""
@@ -167,37 +171,79 @@ class PlacePlanner:
         else:
             approach_position = end_position.copy()
 
+        # Keep only semantic waypoints.  Bézier control points are not
+        # exposed as robot targets because doing so creates visible speed
+        # changes at every control-point boundary.
+        lift_position = start_position.copy()
+        lift_position[2] = max(
+            float(start_position[2]) + max(float(target.lift_height_m), 0.0),
+            float(self.config.safe_z_m),
+        )
+        approach_position = approach_position.copy()
+        approach_position[2] = lift_position[2]
+
         approach_orientation = slerp_quaternion(
             start_orientation,
             target.orientation,
             float(np.clip(self.config.approach_orientation_ratio, 0.0, 1.0)),
         )
-        main_waypoints = smooth_bezier_arc_waypoints(
-            start_position,
-            start_orientation,
-            approach_position,
-            approach_orientation,
-            args,
-            lift_height_m=max(0.0, target.lift_height_m),
-            safe_z_m=self.config.safe_z_m,
-            lift_ramp_ratio=self.config.lift_ramp_ratio,
-            ease_orientation=True,
-        )
-        final_waypoints: list[PoseWaypoint] = []
-        final_sample_count = max(int(self.config.final_approach_samples), 1)
-        for index in range(1, final_sample_count + 1):
-            alpha = smootherstep(index / final_sample_count)
-            final_position = approach_position + (end_position - approach_position) * alpha
-            final_orientation = slerp_quaternion(
-                approach_orientation,
-                target.orientation,
-                alpha,
-            )
-            final_waypoints.append((final_position, final_orientation))
-        return main_waypoints + final_waypoints
+        # Keep the path sparse.  The trajectory planner receives the complete
+        # semantic chain and computes one global tangent/interpolation field;
+        # Place does not pre-sample each segment into extra robot waypoints.
+        return [
+            (lift_position, start_orientation),
+            (approach_position, approach_orientation),
+            (end_position.copy(), target.orientation),
+        ]
 
 
 PLACE_PLANNER = PlacePlanner(PLACE_CONFIG)
+
+
+# Legacy aliases retained for old diagnostics while the runtime uses
+# ``PlacePlanner`` directly.
+def fixed_place_xyz_for_hand(
+    hand: str,
+    object_type: str | None = None,
+) -> tuple[float, float, float]:
+    return PLACE_PLANNER.position_for_hand(hand, object_type)
+
+
+def place_orientation_for_hand(
+    args: argparse.Namespace,
+    hand: str,
+) -> tuple[float, float, float, float]:
+    return PLACE_PLANNER.orientation_for_hand(args, hand)
+
+
+def humanlike_place_waypoints(
+    publisher: RequestIkTargetPublisher,
+    hand: str,
+    end_position: np.ndarray,
+    end_orientation: tuple[float, float, float, float],
+    args: argparse.Namespace,
+) -> list[PoseWaypoint]:
+    """Legacy dense direct-Bézier helper for pre-PlacePlanner callers."""
+    start_position, start_orientation = publisher.remembered_target(hand)
+    end_position = checked_position(end_position)
+    lift_position = start_position.copy()
+    lift_position[2] = max(
+        float(start_position[2]) + PLACE_CONFIG.lift_height_m,
+        PLACE_CONFIG.safe_z_m,
+    )
+    approach_position = end_position.copy()
+    approach_position[2] = lift_position[2]
+    controls = (start_position, lift_position, approach_position, end_position)
+    samples: list[PoseWaypoint] = []
+    for index in range(1, 41):
+        alpha = index / 40.0
+        samples.append(
+            (
+                cubic_bezier_position(*controls, alpha),
+                slerp_quaternion(start_orientation, end_orientation, alpha),
+            )
+        )
+    return samples
 
 
 def execute_fixed_place_after_grasp(
@@ -274,6 +320,8 @@ def execute_fixed_place_after_grasp(
         min_steps=1,
         final_hold_sec=place_target_hold_sec,
         terminal_slowdown=False,
+        final_slowdown_ratio=config.final_slowdown_ratio,
+        direct_bezier=True,
     )
     if timing["first_pose"] is not None:
         for label, key in (

@@ -15,7 +15,7 @@ def test_grasp_path_artifacts_are_not_saved_before_template_grip() -> None:
     from grasp_core.execution.skills import grasp as skill_grasp
 
     source = inspect.getsource(skill_grasp.execute_grasp)
-    callback_index = source.index("count += execute_grip_at_pose(")
+    callback_index = source.index("return execute_grip_at_pose(")
     final_artifact_index = source.index(
         "grasp_path_artifacts or save_request_ik_grasp_path_artifacts"
     )

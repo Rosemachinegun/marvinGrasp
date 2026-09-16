@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import argparse
 import numpy as np
 
 from grasp_core.core.math.pose import PoseWaypoint, checked_position, slerp_quaternion
-from grasp_core.planning.trajectory.constraints import effective_trajectory_step_limits
-from grasp_core.planning.trajectory.interpolation import (
-    cubic_bezier_position,
-    smootherstep,
-)
+from grasp_core.core.math.easing import smootherstep
+from grasp_core.config.trajectory_config import TRAJECTORY_CONFIG
 
 
 def smooth_bezier_arc_waypoints(
@@ -18,7 +14,7 @@ def smooth_bezier_arc_waypoints(
     start_orientation: tuple[float, float, float, float],
     end_position: np.ndarray,
     end_orientation: tuple[float, float, float, float],
-    args: argparse.Namespace,
+    args=None,
     *,
     lift_arc: bool = True,
     ease_orientation: bool = False,
@@ -26,11 +22,11 @@ def smooth_bezier_arc_waypoints(
     safe_z_m: float | None = None,
     lift_ramp_ratio: float = 0.0,
 ) -> list[PoseWaypoint]:
-    """Return constant-distance samples of one smooth cubic Bezier path.
+    """Return geometric anchors for one smooth cubic-Bezier-like path.
 
-    ``lift_ramp_ratio`` moves the lift control points away from the endpoints,
-    so the path enters and leaves the elevated section progressively instead
-    of starting with an abrupt vertical motion.
+    This function intentionally does not sample the curve. The final sampling
+    is performed once by ``plan_trajectory`` after all task waypoints have
+    been assembled.
     """
 
     start_position = checked_position(start_position)
@@ -43,7 +39,7 @@ def smooth_bezier_arc_waypoints(
         max_endpoint_z = max(float(start_position[2]), float(end_position[2]))
         lift_m = max(float(lift_height_m), 0.0)
         configured_safe_z = (
-            float(getattr(args, "home_safe_z_m", 0.8))
+            float(TRAJECTORY_CONFIG.safe_z_m)
             if safe_z_m is None
             else float(safe_z_m)
         )
@@ -52,63 +48,37 @@ def smooth_bezier_arc_waypoints(
         delta = end_position - start_position
         control_1 = start_position + delta * ramp_ratio
         control_2 = end_position - delta * ramp_ratio
-        control_z = (
-            arc_apex_z
-            - 0.125 * (float(start_position[2]) + float(end_position[2]))
-        ) / 0.75
         control_1[2] = float(start_position[2]) + (
-            control_z - float(start_position[2])
-        ) * ramp_ratio
+            arc_apex_z - float(start_position[2])
+        ) * min(2.0 * ramp_ratio, 1.0)
         control_2[2] = float(end_position[2]) + (
-            control_z - float(end_position[2])
-        ) * ramp_ratio
-    else:
-        delta = end_position - start_position
-        cruise_z = max(float(start_position[2]), float(end_position[2]))
-        control_1 = start_position.copy()
-        control_1[:2] += delta[:2] / 3.0
-        control_1[2] = cruise_z
-        control_2 = end_position.copy()
-        control_2[2] = cruise_z
-
-    max_step_m, _max_step_deg = effective_trajectory_step_limits(args)
-    lookup_alpha = np.linspace(0.0, 1.0, 401)
-    lookup_positions = np.asarray(
-        [
-            cubic_bezier_position(
-                start_position, control_1, control_2, end_position, alpha
+            arc_apex_z - float(end_position[2])
+        ) * min(2.0 * ramp_ratio, 1.0)
+        anchor_alphas = (ramp_ratio, 1.0 - ramp_ratio, 1.0)
+        anchor_positions = (control_1, control_2, end_position)
+        return [
+            (
+                checked_position(position).copy(),
+                slerp_quaternion(
+                    start_orientation,
+                    end_orientation,
+                    smootherstep(float(alpha)) if ease_orientation else float(alpha),
+                ),
             )
-            for alpha in lookup_alpha
+            for position, alpha in zip(anchor_positions, anchor_alphas, strict=True)
         ]
-    )
-    cumulative_length = np.concatenate(
-        (
-            np.zeros(1, dtype=np.float64),
-            np.cumsum(np.linalg.norm(np.diff(lookup_positions, axis=0), axis=1)),
-        )
-    )
-    curve_length_m = float(cumulative_length[-1])
-    # These are geometric waypoints, not controller publish samples.  Using
-    # the 1 kHz controller step here can create thousands of tiny segments;
-    # the motion planner will resample the resulting curve at the configured
-    # limits afterward.  Keep enough points to preserve the arc shape while
-    # bounding planning/refinement overhead.
-    geometric_sample_count = int(np.ceil(curve_length_m / max_step_m))
-    sample_count = max(min(geometric_sample_count, 128), 2)
-    sample_distances = np.linspace(0.0, curve_length_m, sample_count + 1)[1:]
-    sample_alphas = np.interp(sample_distances, cumulative_length, lookup_alpha)
-    waypoints: list[PoseWaypoint] = []
-    for alpha_raw in sample_alphas:
-        alpha = float(alpha_raw)
-        curve_position = cubic_bezier_position(
-            start_position, control_1, control_2, end_position, alpha
-        )
-        orientation_alpha = smootherstep(alpha) if ease_orientation else alpha
-        curve_orientation = slerp_quaternion(
-            start_orientation, end_orientation, orientation_alpha
-        )
-        waypoints.append((curve_position, curve_orientation))
-    return waypoints
+    else:
+        orientation_alpha = smootherstep(1.0) if ease_orientation else 1.0
+        return [
+            (
+                end_position.copy(),
+                slerp_quaternion(
+                    start_orientation,
+                    end_orientation,
+                    orientation_alpha,
+                ),
+            )
+        ]
 
 
 __all__ = ["smooth_bezier_arc_waypoints"]

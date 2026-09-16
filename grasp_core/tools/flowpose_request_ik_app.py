@@ -64,7 +64,7 @@ from grasp_core.execution.robot_skill_service import (  # noqa: E402
 )
 from grasp_core.execution.skills.grasp import GRASP_PLANNER  # noqa: E402
 from grasp_core.planning.grasp.policies.ribbon import assume_grasp_success  # noqa: E402
-from grasp_core.planning.grasp.tool_pick_templates import load_tool_pick_templates  # noqa: E402
+from grasp_core.planning.grasp.planner import UnifiedGraspPlanner  # noqa: E402
 
 
 # OpenCV returns a single byte for keyboard input, so normalize to lowercase once.
@@ -171,6 +171,8 @@ class GraspDemoApp:
         self.place_target_count: int | None = None
         self.manual_home_future: Future | None = None
         self.manual_home_hand: tuple[str, ...] | None = None
+        self.auto_home_future: Future | None = None
+        self.auto_home_hand: str | None = None
         self.gripper_interrupted = False
 
         sam_kwargs, flowpose_kwargs, capture_dir = build_runner_kwargs(args)
@@ -224,18 +226,40 @@ class GraspDemoApp:
         self.camera.open()
 
         self.ik_publisher = build_ik_target_publisher(self.args)
-        self.pick_templates = load_tool_pick_templates(self.args)
+        self.pick_templates = UnifiedGraspPlanner().load_templates(self.args)
         self.robot_actions = RobotActionService(
             args=self.args,
             ik_publisher=self.ik_publisher,
             pick_templates=self.pick_templates,
         )
+
+        # Always establish a known robot starting pose before loading/running
+        # any task. HOME commands share the single action executor and are
+        # published serially to avoid concurrent use of the IK client.
+        self._move_both_hands_home_at_startup()
+
         self.gripper_receiver = start_gripper_signal_receiver(self.args)
 
         print("[startup] preloading SAM3 and FlowPose runners...", flush=True)
         self.sam_cache["runner"] = Sam3Runner(**self.sam_kwargs)
         self.flowpose_cache["runner"] = FlowPoseRunner(**self.flowpose_kwargs)
         print("[startup] SAM3 and FlowPose runners ready", flush=True)
+
+    def _move_both_hands_home_at_startup(self) -> None:
+        """Return both arms HOME before the application accepts any task."""
+        if self.robot_actions is None or self.ik_publisher is None:
+            raise RuntimeError("startup HOME unavailable: robot IK service is not ready")
+        print("[startup] returning both arms HOME before tasks", flush=True)
+        status = self._publish_manual_homes(("left", "right"), frozenset())
+        status_lower = status.lower()
+        if any(
+            token in status_lower
+            for token in ("failed", "unavailable", "stopped", "interrupted", "error")
+        ):
+            raise RuntimeError(f"startup HOME failed: {status}")
+        self.state.home_needs_sync.clear()
+        self.state.status = f"Startup HOME complete: {status}"
+        print(f"[startup] HOME complete: {status}", flush=True)
 
     def close(self) -> None:
         """Release all resources. Safe to call after partial startup."""
@@ -405,7 +429,14 @@ class GraspDemoApp:
             self.state.status = "SAM3 already running"
             return
 
-        meta_path, metadata = save_capture(bundle, self.capture_dir)
+        # Keep the capture only in memory. The only persistent artifact for
+        # this app is the final 3D target-OBB plot.
+        meta_path, metadata = save_capture(
+            bundle,
+            self.capture_dir,
+            save_files=False,
+            save_color=False,
+        )
         frozen_bundle = freeze_bundle(bundle)
 
         # A new capture invalidates every downstream visualization/result.
@@ -425,6 +456,8 @@ class GraspDemoApp:
             meta_path,
             metadata,
             self.args,
+            False,
+            False,
         )
         # print(self.state)
 
@@ -453,6 +486,8 @@ class GraspDemoApp:
             self.state.sam_result,
             self.args,
             self.camera_extrinsic.matrix,
+            False,
+            False,
         )
         # print(self.state)
 
@@ -501,7 +536,7 @@ class GraspDemoApp:
             if s.flowpose_future.done():
                 s.flowpose_future = None
 
-    def publish_grasp(self) -> None:
+    def publish_grasp(self, *, retry: bool = False) -> None:
         """Send the latest target to IK and start recovery on grip failure."""
         if self.robot_actions is None:
             self.state.status = "Robot action service unavailable"
@@ -516,12 +551,77 @@ class GraspDemoApp:
             self.ik_publisher.clear_stop()
 
         targets = list(self.state.base_targets)
-        self.state.parked_after_place_hand = None
-        self.grasp_future = self.action_executor.submit(
-            self.robot_actions.publish_grasp,
-            targets,
+        next_hand = self._selected_target_hand(targets)
+        parked_hand = self.state.parked_after_place_hand
+        switched_from_hand: str | None = None
+
+        # With multiple targets, Place intentionally leaves the successful hand
+        # at the place/wait pose.  If the next target is assigned to the other
+        # hand, return the parked hand HOME before starting the next grasp. Both
+        # jobs use the same single-worker executor, so HOME and grasp cannot
+        # publish concurrently to the IK target stream.
+        if parked_hand in {"left", "right"} and next_hand in {"left", "right"}:
+            if parked_hand != next_hand:
+                switched_from_hand = parked_hand
+                self.auto_home_hand = parked_hand
+                self.auto_home_future = self.action_executor.submit(
+                    self.robot_actions.publish_home,
+                    parked_hand,
+                    fresh_measured_start=False,
+                )
+                self.state.status = (
+                    f"Hand switched {parked_hand}->{next_hand}; "
+                    f"{parked_hand} HOME queued before grasp"
+                )
+            self.state.parked_after_place_hand = None
+        else:
+            self.state.parked_after_place_hand = None
+        if retry:
+            self.grasp_future = self.action_executor.submit(
+                self.robot_actions.publish_grasp,
+                targets,
+                retry=True,
+            )
+            action_status = "Grasp retry action running"
+        else:
+            self.grasp_future = self.action_executor.submit(
+                self.robot_actions.publish_grasp,
+                targets,
+            )
+            action_status = "Grasp action running"
+        if switched_from_hand is not None:
+            self.state.status = (
+                f"{action_status}; {switched_from_hand} HOME queued before grasp"
+            )
+        else:
+            self.state.status = action_status
+
+    def _selected_target_hand(self, targets: list[TargetObjectPose]) -> str | None:
+        """Return the hand selected for the current target, if available."""
+        if not targets:
+            return None
+        index = min(
+            max(int(getattr(self.args, "ik_target_index", 0)), 0),
+            len(targets) - 1,
         )
-        self.state.status = "Grasp action running"
+        hand_mode = str(getattr(self.args, "ik_hand", "auto"))
+        if hand_mode in {"left", "right"}:
+            return hand_mode
+        return select_ik_hand(targets[index].base_xyz, hand_mode)
+
+    def collect_auto_home_result(self) -> None:
+        """Consume the automatic HOME queued during a hand switch."""
+        if self.auto_home_future is None or not self.auto_home_future.done():
+            return
+        try:
+            status = self.auto_home_future.result()
+        except Exception as exc:  # noqa: BLE001
+            status = f"Automatic HOME failed: {exc}"
+            print(f"[home] {status}", flush=True)
+        if self.state.status.startswith("Hand switched"):
+            self.state.status = status
+        self.auto_home_future = None
+        self.auto_home_hand = None
 
     def home_both_when_no_targets(self) -> None:
         """Return both hands HOME when no targets remain."""
@@ -553,8 +653,15 @@ class GraspDemoApp:
         self.finish_grasp_result(result)
 
     def finish_grasp_result(self, result) -> None:
+        # A failed grip requests a publisher stop to cancel any remaining
+        # motion before recovery.  That internal stop must not be mistaken for
+        # an operator pause, otherwise the failed-grasp recovery is skipped and
+        # the pipeline appears stuck after GRIP_FAILED_MIN_LIMIT.
+        grasp_failed = bool(result.failed_min_limit or not result.ok)
         if self.state.paused or (
-            self.ik_publisher is not None and self.ik_publisher.stop_requested()
+            not grasp_failed
+            and self.ik_publisher is not None
+            and self.ik_publisher.stop_requested()
         ):
             self.state.grasp_confirmed = False
             self.state.grasp_confirmed_hand = None
@@ -601,6 +708,7 @@ class GraspDemoApp:
         hand = self.state.grasp_confirmed_hand
         object_label = self.state.grasp_confirmed_label
         grasp_confirmed = self.state.grasp_confirmed
+
         self.place_future = self.action_executor.submit(
             self.robot_actions.publish_place,
             grasp_confirmed=grasp_confirmed,
@@ -634,6 +742,8 @@ class GraspDemoApp:
             self.state.grasp_confirmed = False
             self.state.grasp_confirmed_hand = None
             self.state.grasp_confirmed_label = None
+            # Place performs the gripper release before its future completes.
+            # Start perception now so it reads the newest post-release frame.
             self.restart_grasp_pipeline_after_place()
 
     def publish_place(self) -> None:
@@ -955,7 +1065,7 @@ class GraspDemoApp:
                 f"[grip_retry] Retry {s.retry_attempts}: fresh FlowPose target ready; grasping",
                 flush=True,
             )
-            self.publish_grasp()
+            self.publish_grasp(retry=True)
 
     def start_pipeline(self, *, grasp_on_done: bool = True) -> bool:
         """Start one-key capture -> SAM3 -> FlowPose, optionally followed by grasp."""
@@ -1217,6 +1327,7 @@ class GraspDemoApp:
                 self.advance_pipeline()
             self.collect_grasp_result()
             self.collect_place_result()
+            self.collect_auto_home_result()
             self.collect_manual_home_result()
             self._collect_gripper_result()
             self.update_drop_recovery()

@@ -11,7 +11,7 @@ from grasp_core.perception.flowpose_pipeline import (
     apply_long_object_axes_to_flowpose_output,
 )
 from grasp_core.planning.grasp.policies.long_object import (
-    make_screwdriver_handle_gripper_pose,
+    make_cuboid_gripper_pose,
 )
 
 
@@ -89,7 +89,7 @@ def test_pipeline_uses_raw_paired_size_before_calibration_and_grasps_short_axis(
     args = Namespace(ik_grasp_tcp_offset_m=(0, 0, 0), ik_target_stage="grasp",
                      ik_orientation_quat=(0, 0, 0, 1), ik_downward_tilt_deg=0,
                      ik_downward_tilt_y_deg=45, ik_downward_tilt_frame="local")
-    gripper, metadata = make_screwdriver_handle_gripper_pose(target, args, hand=hand)
+    gripper, metadata = make_cuboid_gripper_pose(target, args, hand=hand)
     assert metadata.closing_axis_name == "y"
     assert abs(gripper[:3, 1] @ metadata.long_axis) < 1e-12
     assert abs(abs(gripper[:3, 1] @ metadata.side_axis) - 1) < 1e-12
