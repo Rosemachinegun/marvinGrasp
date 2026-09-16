@@ -1982,6 +1982,8 @@ pip install numpy sounddevice faster-whisper
 sudo apt update
 sudo apt install -y libportaudio2 portaudio19-dev
 
+http://10.121.40.177:7860/
+
 
   
 # 34. 推荐迁移原则
