@@ -1972,6 +1972,17 @@ ros2 service call /control/set_ready std_srvs/srv/Trigger "{}"
 ros2 service call /control/set_mode marvin_msgs/srv/Int "{data: 1}"
 ros2 service call /control/set_input marvin_msgs/srv/Int "{data: 1}"    
   use_rviz:=true
+
+
+
+9.16晚更新
+
+语音模块：
+pip install numpy sounddevice faster-whisper
+sudo apt update
+sudo apt install -y libportaudio2 portaudio19-dev
+
+
   
 # 34. 推荐迁移原则
 
