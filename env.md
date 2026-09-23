@@ -1,1980 +1,630 @@
-# marvinGrasp 新机器人 / 新主机部署指南
+# marvinGrasp / FlowPose 部署指南
 
-> 项目仓库：`https://github.com/Rosemachinegun/marvinGrasp`
->
-> 目标：在新的 Ubuntu 主机和新的 Marvin 机器人上，完整恢复 `RealSense → SAM3 → FlowPose → Grasp Policy → IK / Trajectory → Gripper → Pick / Put / Recovery` 实机抓取链路。
+本文档以当前仓库为准，目标是恢复：
 
----
+~~~
+RealSense → SAM3 → FlowPose → 抓取规划 → ROS2 / request_ik → 夹爪
+~~~
 
-## 1. 迁移时需要准备什么
+推荐软件栈：
 
-这次迁移不是单纯 `git clone`。
-
-完整系统实际上包含：
-
-```text
-代码
-+
-Python / AI 环境
-+
-模型权重
-+
-ROS2 / 机器人控制环境
-+
-RealSense
-+
-相机外参
-+
-机器人 TF / URDF / TCP
-+
-夹爪通信与标定
-+
-网络
-+
-Home / Put / Table 等工作空间参数
-```
-
-其中可以直接继承的通常是：
-
-```text
-SAM3 提示词逻辑
-FlowPose 推理逻辑
-Cube symmetry policy
-Long-object / pen policy
-Trajectory smoothing
-Drop recovery state machine
-Pause / resume logic
-```
-
-而新的机器人上必须重新确认或重新标定的通常是：
-
-```text
-T_base_camera
-RealSense serial
-Robot URDF / TCP
-Robot / Gripper IP
-Gripper calibration
-Home
-PUT positions
-Table Z
-Workspace boundary
-```
-
----
-
-# 2. 推荐的软件栈
-
-为了优先把 Demo 跑通，建议尽量保持和旧系统一致。
-
-| 模块 | 推荐 |
+| 项目 | 版本 / 要求 |
 |---|---|
-| OS | Ubuntu 22.04 |
-| ROS | ROS2 Humble |
-| Python | Python 3.10 |
-| Conda env | `flowpose` |
-| GPU | NVIDIA GPU |
-| AI Framework | PyTorch + CUDA |
-| Camera | Intel RealSense D455 |
-| Segmentation | SAM3 |
-| 6D Pose | FlowPose |
-| Feature Backbone | DINOv2 |
-| Robot | Marvin 7DoF |
-| Gripper | Daimon / DM-DATACLAW |
-| Communication | ROS2 + gRPC |
+| Ubuntu | 22.04 |
+| ROS2 | Humble |
+| Python | 3.10 |
+| Conda 环境 | flowpose |
+| PyTorch | 2.5.1 |
+| PyTorch CUDA | 12.1 |
+| GPU | NVIDIA CUDA GPU |
+| 相机 | Intel RealSense D455 / 兼容型号 |
 
-不建议迁移过程中同时升级：
+## 0. 安装原则
 
-```text
-Ubuntu
-ROS
-Python
-PyTorch
-CUDA
-FlowPose
-SAM3
-```
+仓库中有两套旧安装说明：
 
-先复现旧环境，再单独升级。
+- 根目录 environment-flowpose.yml 是当前推荐环境。
+- perception/flowpose/README.md 中的 genpose2 环境名和旧版 PyTorch/CUDA 版本已经过时。
 
----
+不要混用两套 PyTorch/CUDA 安装方式。本文档统一使用：
 
-# 3. 旧主机先做备份
+~~~
+Python 3.10
+PyTorch 2.5.1
+PyTorch CUDA 12.1
+CUDA Toolkit 12.1
+Conda 环境 flowpose
+~~~
 
-如果旧主机还能运行，迁移之前先保存当前真实可运行状态。
+当前主应用默认模型路径：
 
-```bash
-cd ~/graspdemo
+~~~
+perception/models/FlowNet3.pth
+perception/models/ScaleNet3.pth
+perception/models/sam3.pt
+perception/models/facebookresearch_dinov2_main/
+perception/models/dinov2_vits14_pretrain.pth
+~~~
+
+## 1. 迁移前备份旧主机
+
+在旧主机执行：
+
+~~~
+cd /path/to/marvinGrasp
 
 git status
 git branch --show-current
 git rev-parse HEAD
 git remote -v
-```
 
-记录：
-
-```text
-当前 branch
-当前 commit SHA
-是否存在未提交修改
-远程仓库地址
-```
-
-建议新机器最终 checkout **完全相同的 commit**，不要单纯按照 README 的默认 branch。
-
----
-
-## 3.1 导出 Python 环境
-
-```bash
 conda activate flowpose
-
 conda env export > flowpose_environment_full.yml
 conda env export --from-history > flowpose_environment_history.yml
-pip freeze > pip_freeze.txt
-```
+python -m pip freeze > pip_freeze.txt
 
-记录系统环境：
-
-```bash
 python --version > environment_info.txt
-pip --version >> environment_info.txt
+python -m pip --version >> environment_info.txt
 nvidia-smi >> environment_info.txt
 nvcc --version >> environment_info.txt
-```
-
-ROS 信息：
-
-```bash
 ros2 doctor --report > ros2_doctor.txt
-```
+~~~
 
----
+重点备份：
 
-## 3.2 备份模型
-
-Git 通常不会保存大型模型权重。
-
-重点确认：
-
-```text
-sam3.pt
+~~~
 FlowNet3.pth
 ScaleNet3.pth
-DINOv2 repo / checkpoint / cache
-其他 FlowPose checkpoint
-```
+sam3.pt
+DINOv2 源码目录
+DINOv2 checkpoint
+旧主机的相机外参
+RealSense 序列号
+机器人 URDF / xacro / TCP 配置
+夹爪地址和标定参数
+~~~
 
-例如：
+新主机建议 checkout 完全相同的 commit：
 
-```bash
-cp -a ~/graspdemo/model ~/graspdemo_model_backup
-```
+~~~
+git fetch --all
+git checkout <OLD_COMMIT_SHA>
+git rev-parse HEAD
+~~~
 
-还建议查看：
+## 2. 检查 Ubuntu、NVIDIA 和 ROS2
 
-```bash
-ls ~/.cache/torch/hub/
-```
-
-如果 DINOv2 是通过 Torch Hub 加载的，旧机器可能依赖这里的缓存。
-
----
-
-# 4. 新主机基础环境
-
-## 4.1 Ubuntu
-
-推荐：
-
-```text
-Ubuntu 22.04
-```
-
-检查：
-
-```bash
+~~~
 lsb_release -a
-```
-
----
-
-## 4.2 NVIDIA Driver
-
-检查：
-
-```bash
 nvidia-smi
-```
+nvcc --version
+~~~
 
-必须能够识别 GPU。
+nvidia-smi 必须可以识别 GPU。仅有 nvcc 不代表 NVIDIA 驱动正常。
 
----
+如果驱动未安装或 nvidia-smi 失败：
 
-## 4.3 CUDA / PyTorch
+~~~
+ubuntu-drivers devices
+sudo ubuntu-drivers autoinstall
+sudo reboot
+~~~
 
-真正需要确认的是 PyTorch 能使用 CUDA。
+重启后再次检查：
 
-安装好 PyTorch 后：
+~~~
+nvidia-smi
+~~~
 
-```bash
-python - <<'PY'
-import torch
+检查 ROS2：
 
-print("Torch:", torch.__version__)
-print("Torch CUDA:", torch.version.cuda)
-print("CUDA available:", torch.cuda.is_available())
+~~~
+source /opt/ros/humble/setup.bash
+ros2 doctor --report
+~~~
 
-if torch.cuda.is_available():
-    print("GPU:", torch.cuda.get_device_name(0))
-PY
-```
+FlowPose 可以单独运行，但完整机器人应用需要 ROS2 Humble。
 
-预期：
+## 3. 安装系统依赖
 
-```text
-CUDA available: True
-```
+~~~
+sudo apt update
 
----
+sudo apt install -y \
+  build-essential gcc g++ make cmake ninja-build git pkg-config \
+  libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+  libusb-1.0-0
+~~~
 
-# 5. Conda / Python 环境
+RealSense 建议安装系统工具和开发包：
 
-建议：
+~~~
+sudo apt install -y librealsense2-utils librealsense2-dev
+~~~
 
-```text
-Conda env: flowpose
-Python: 3.10
-```
+如果找不到 librealsense2-*，需要先按 Intel librealsense 对应 Ubuntu 22.04 的软件源说明添加仓库。
 
-创建：
+检查相机工具：
 
-```bash
-conda create -n flowpose python=3.10 -y
+~~~
+rs-enumerate-devices
+~~~
+
+## 4. 获取仓库
+
+~~~
+cd /home/jjj/code
+git clone https://github.com/Rosemachinegun/marvinGrasp.git
+cd marvinGrasp
+~~~
+
+如果仓库已经存在：
+
+~~~
+cd /home/jjj/code/marvinGrasp
+git status
+git rev-parse HEAD
+~~~
+
+设置仓库根目录变量：
+
+~~~
+export REPO_ROOT=/home/jjj/code/marvinGrasp
+~~~
+
+## 5. 创建或更新 Conda 环境
+
+必须在仓库根目录执行，因为 environment-flowpose.yml 中包含本地 SAM3 editable 安装：
+
+~~~
+cd "$REPO_ROOT"
+conda env create -f environment-flowpose.yml
 conda activate flowpose
-```
+~~~
 
-随时检查：
+如果 flowpose 环境已经存在：
 
-```bash
+~~~
+conda activate flowpose
+conda env update -n flowpose -f "$REPO_ROOT/environment-flowpose.yml"
+~~~
+
+确认 Python 和 pip 来自同一个环境：
+
+~~~
 which python
 which pip
 python --version
-```
-
-预期路径应该类似：
-
-```text
-.../envs/flowpose/bin/python
-.../envs/flowpose/bin/pip
-```
-
-避免出现：
-
-```text
-sam3 安装在 base
-但项目使用 flowpose
-```
-
-这种环境错位。
-
----
-
-# 6. Clone marvinGrasp
-
-```bash
-cd ~
-git clone https://github.com/Rosemachinegun/marvinGrasp.git
-cd marvinGrasp
-```
-
-如果知道旧主机 commit：
-
-```bash
-git fetch --all
-git checkout <OLD_COMMIT_SHA>
-```
-
-确认：
-
-```bash
-git rev-parse HEAD
-```
-
-和旧主机一致。
-
----
-
-# 7. Python 基础依赖
-
-进入：
-
-```bash
-conda activate flowpose
-cd ~/marvinGrasp
-```
-
-先确认基础包：
-
-```bash
-python - <<'PY'
-import numpy
-import cv2
-import scipy
-import torch
-
-print("NumPy:", numpy.__version__)
-print("OpenCV:", cv2.__version__)
-print("SciPy:", scipy.__version__)
-print("Torch:", torch.__version__)
-print("Basic AI environment OK")
-PY
-```
-
-项目还可能使用：
-
-```text
-numpy
-scipy
-opencv-python
-torch
-torchvision
-grpcio
-protobuf
-pyyaml
-tqdm
-Pillow
-```
-
-具体版本优先参考旧电脑的：
-
-```text
-pip_freeze.txt
-```
-
----
-
-# 8. SAM3
-
-如果出现：
-
-```text
-ModuleNotFoundError: No module named 'sam3'
-```
-
-说明缺的是 **SAM3 Python package**，而不只是权重。
-
-SAM3 需要：
-
-```text
-SAM3 source code
-+
-sam3.pt
-```
-
----
-
-## 8.1 安装 SAM3
-
-```bash
-conda activate flowpose
-
-cd ~
-git clone https://github.com/facebookresearch/sam3.git
-cd sam3
-
-pip install -e .
-```
-
-检查：
-
-```bash
-python -c "import sam3; print(sam3.__file__)"
-```
-
-进一步检查：
-
-```bash
-python - <<'PY'
-from sam3.model_builder import build_sam3_image_model
-print("SAM3 import OK")
-PY
-```
-
----
-
-## 8.2 SAM3 权重
-
-准备：
-
-```text
-sam3.pt
-```
-
-推荐放到：
-
-```text
-~/marvinGrasp/perception/models/sam3.pt
-```
-
-最终结构例如：
-
-```text
-marvinGrasp/
-└── perception/
-    └── models/
-        └── sam3.pt
-```
-
-注意：
-
-```text
-sam3 package != sam3.pt
-```
-
-一个是网络代码，一个是模型参数，两者都需要。
-
----
-
-# 9. FlowPose
-
-FlowPose 至少涉及：
-
-```text
-FlowPose source
-FlowNet3.pth
-ScaleNet3.pth
-DINOv2
-PyTorch
-NumPy
-OpenCV
-SciPy
-```
-
-旧主机需要复制：
-
-```text
-FlowNet3.pth
-ScaleNet3.pth
-```
-
-推荐统一存到：
-
-```text
-marvinGrasp/
-└── perception/
-    └── models/
-        ├── FlowNet3.pth
-        ├── ScaleNet3.pth
-        └── sam3.pt
-```
-
----
-
-## 9.1 检查硬编码旧路径
-
-特别注意旧主机可能使用：
-
-```text
-/home/kewei/...
-/home/kewei/.cache/torch/hub/...
-```
-
-新主机用户名或目录变化后会失效。
-
-建议逐渐把模型路径统一放进：
-
-```text
-config/models.yaml
-```
-
-例如：
-
-```yaml
-sam3_checkpoint: /home/<USER>/marvinGrasp/perception/models/sam3.pt
-flownet_checkpoint: /home/<USER>/marvinGrasp/perception/models/FlowNet3.pth
-scalenet_checkpoint: /home/<USER>/marvinGrasp/perception/models/ScaleNet3.pth
-dinov2_root: /home/<USER>/dinov2
-```
-
-不要长期依赖散落在 Python 文件里的绝对路径。
-
----
-
-# 10. DINOv2
-
-FlowPose 使用 DINO 特征，因此 DINO 也必须可用。
-
-旧主机检查：
-
-```bash
-ls ~/.cache/torch/hub/
-```
-
-如果存在：
-
-```text
-facebookresearch_dinov2...
-```
-
-说明旧系统可能使用 Torch Hub cache。
-
-新机器可以：
-
-```text
-重新下载
-```
-
-或：
-
-```text
-复制旧 cache
-```
-
-最终目标是 FlowPose 初始化 DINO 时不会出现：
-
-```text
-repository not found
-checkpoint not found
-No module named ...
-```
-
----
-
-# 11. RealSense D455
-
-需要：
-
-```text
-librealsense2
-pyrealsense2
-```
-
-如果需要 ROS node：
-
-```text
-realsense2_camera
-```
-
----
-
-## 11.1 检查 D455
-
-连接相机：
-
-```bash
-rs-enumerate-devices
-```
-
-确认：
-
-```text
-Intel RealSense D455
-Serial Number
-Firmware Version
-```
-
----
-
-## 11.2 Python 检查
-
-```bash
-python - <<'PY'
-import pyrealsense2 as rs
-
-print("pyrealsense2 OK")
-
-ctx = rs.context()
-
-for dev in ctx.devices:
-    print("Name:", dev.get_info(rs.camera_info.name))
-    print("Serial:", dev.get_info(rs.camera_info.serial_number))
-PY
-```
-
----
-
-# 12. 修改 RealSense Serial
-
-旧代码中如果存在固定 serial，例如：
-
-```python
-DEFAULT_SERIAL = "..."
-```
-
-新 D455 必须重新查询：
-
-```bash
-rs-enumerate-devices
-```
-
-然后：
-
-```text
-修改默认 serial
-```
-
-或运行时：
-
-```bash
---serial <NEW_SERIAL>
-```
-
-建议以后放入：
-
-```text
-config/hardware.yaml
-```
-
-例如：
-
-```yaml
-camera:
-  type: D455
-  serial: "XXXXXXXXXXXX"
-```
-
----
-
-# 13. ROS2 Humble
-
-推荐：
-
-```text
-ROS2 Humble
-```
-
-确认：
-
-```bash
-source /opt/ros/humble/setup.bash
-ros2 --help
-```
-
-Python 需要至少访问：
-
-```text
-rclpy
-tf2_ros
-geometry_msgs
-sensor_msgs
-trajectory_msgs
-```
-
-检查：
-
-```bash
-python - <<'PY'
-import rclpy
-import tf2_ros
-
-print("ROS Python OK")
-PY
-```
-
-如果：
-
-```text
-No module named rclpy
-```
-
-不要优先尝试：
-
-```bash
-pip install rclpy
-```
-
-应首先确认：
-
-```bash
-source /opt/ros/humble/setup.bash
-```
-
-以及当前 Python / ROS 环境关系。
-
----
-
-# 14. Marvin 机器人 ROS Workspace
-
-`marvinGrasp` 是上层抓取项目，并不等于完整机器人控制系统。
-
-整体链路：
-
-```text
-RealSense
-    ↓
-SAM3
-    ↓
-FlowPose
-    ↓
-Grasp Policy
-    ↓
-marvinGrasp
-    ↓
-Target Pose / Cartesian Trajectory
-    ↓
-IK / QP
-    ↓
-Robot Controller
-    ↓
-Robot Driver
-    ↓
-7DoF Arm
-```
-
-因此需要从旧主机或机器人团队处准备：
-
-```text
-marvin_description
-URDF / Xacro
-IK
-QP Controller
-Robot Controller
-Robot Driver
-request_ik_tester
-```
-
----
-
-## 14.1 Build ROS Workspace
-
-例如：
-
-```bash
-cd ~/robot_ws
-source /opt/ros/humble/setup.bash
-
-colcon build
-
-source install/setup.bash
-```
-
-建议写入终端启动脚本：
-
-```bash
-source /opt/ros/humble/setup.bash
-source ~/robot_ws/install/setup.bash
-conda activate flowpose
-```
-
----
-
-# 15. 检查 ROS Topics
-
-项目可能依赖：
-
-```text
-/joint_states
-
-/control/request_ik_tester/target_poseL
-/control/request_ik_tester/target_poseR
-
-/control/request_ik_tester/target_trajectoryL
-/control/request_ik_tester/target_trajectoryR
-```
-
-检查：
-
-```bash
-ros2 node list
-ros2 topic list
-```
-
-确认目标 topic 都存在。
-
----
-
-# 16. TF / Robot Frames
-
-至少确认：
-
-```text
-base_link
-camera_rgb_link
-left_tool / left_tcp
-right_tool / right_tcp
-```
-
-查看：
-
-```bash
-ros2 run tf2_ros tf2_echo base_link camera_rgb_link
-```
-
-```bash
-ros2 run tf2_ros tf2_echo base_link left_tool
-```
-
-```bash
-ros2 run tf2_ros tf2_echo base_link right_tool
-```
-
-也可以：
-
-```bash
-ros2 run tf2_tools view_frames
-```
-
----
-
-# 17. 新机器人必须重新标定相机外参
-
-这是迁移中最重要的一项之一。
-
-视觉输出最终转换：
-
-```text
-camera frame object pose
-        ↓
-T_base_camera
-        ↓
-base_link object pose
-```
-
-数学上：
-
-```text
-T_base_object
-=
-T_base_camera
-×
-T_camera_object
-```
-
-因此如果 D455 在新机器人上的安装位置不同：
-
-```text
-旧 T_base_camera
-```
-
-不能继续直接使用。
-
----
-
-## 17.1 重新标定
-
-可以继续使用项目已有标定程序，例如：
-
-```bash
-python3 calibrate_camera_extrinsic.py \
-    --live-realsense \
-    --save-samples calib_samples.json \
-    --output camera_extrinsic_result.json \
-    --write-xacro stand_v3.urf.xacro
-```
-
-然后验证：
-
-```bash
-ros2 run tf2_ros tf2_echo base_link camera_rgb_link
-```
-
----
-
-## 17.2 RViz 验证
-
-在真正运动机械臂之前：
-
-```text
-Real object
-     ↓
-FlowPose estimated frame
-     ↓
-base_link transformed marker
-```
-
-必须在 RViz 里基本重合。
-
-如果这里不对：
-
-```text
-不要继续自动抓取
-```
-
----
-
-# 18. Robot URDF / TCP / IK
-
-如果新机器人是：
-
-```text
-同型号
-同尺寸
-同 TCP
-同 base 定义
-```
-
-一般可以继续复用大部分 IK。
-
-但仍需验证。
-
-如果新的机器人存在：
-
-```text
-机械臂长度不同
-关节零位不同
-URDF 不同
-Joint limit 不同
-TCP 不同
-工具安装不同
-```
-
-则必须重新确认：
-
-```text
-URDF
-TCP Transform
-Joint Limits
-Collision Geometry
-IK / QP Model
-Home Joint Configuration
-```
-
-否则可能出现：
-
-```text
-视觉目标正确
-但 IK 使用旧机器人模型
-```
-
-导致实机运动错误。
-
----
-
-# 19. Daimon / DM-DATACLAW 夹爪环境
-
-Python 通信至少涉及：
-
-```text
-grpcio
-protobuf
-```
-
-检查：
-
-```bash
-python -c "import grpc; print(grpc.__version__)"
-```
-
-项目本身还包含：
-
-```text
-daimon_gripper
-```
-
----
-
-# 20. 新机器人夹爪 IP
-
-旧项目可能存在：
-
-```text
-left_server  = 192.168.14.11:55551
-right_server = 192.168.10.11:55551
-```
-
-新机器人不要直接默认这些地址仍然有效。
-
-需要确认：
-
-```text
-Left Gripper IP
-Right Gripper IP
-Robot Controller IP
-Left Camera IP
-Right Camera IP
-```
-
----
-
-# 21. 网络
-
-旧系统可能同时涉及：
-
-```text
-192.168.10.x
-192.168.14.x
-```
-
-检查：
-
-```bash
-ip addr
-ip route
-```
-
-确认目标设备：
-
-```bash
-ping <LEFT_GRIPPER_IP>
-ping <RIGHT_GRIPPER_IP>
-ping <ROBOT_IP>
-```
-
-必要时为一个网卡添加多个 subnet 地址，例如：
-
-```bash
-sudo ip addr add 192.168.10.123/24 dev enp3s0
-sudo ip addr add 192.168.14.123/24 dev enp3s0
-```
-
-但具体 PC IP 应该按新机器人的网络规划设置，不要直接照抄旧机器。
-
----
-
-# 22. 新夹爪重新标定
-
-如果实际换了新夹爪，不建议直接复制旧：
-
-```text
-.gripper_calibration_cache.json
-```
-
-需要重新确认：
-
-```text
-fully open position
-fully closed position
-empty close limit
-object gripping position
-torque
-hold torque
-current
-stall threshold
-drop threshold
-```
-
-否则下面逻辑都可能错误：
-
-```text
-抓取成功判定
-空夹判定
-掉落检测
-失败恢复
-```
-
----
-
-# 23. tool.yaml
-
-这类参数不能认为换机器人以后仍然成立。
-
-重点检查：
-
-```text
-force_object_z
-forced_object_z_m
-pregrasp_distance_m
-lift_distance_m
-pose_relative
-rotation_constraint
-IK downward tilt
-gripper parameters
-```
-
-例如如果存在：
-
-```yaml
-force_object_z: true
-forced_object_z_m: 0.67
-```
-
-意味着项目对世界坐标中的物体 Z 有强假设。
-
-换机器人 / 换桌子后，需要重新确认：
-
-```text
-base_link Z
-table Z
-object Z
-safe Z
-```
-
----
-
-# 24. Home
-
-Home 不应该第一次就高速测试。
-
-即使是同型号机器人，也建议：
-
-```text
-10% Speed
-→ No Object
-→ One Arm
-→ Home
-```
-
-确认：
-
-```text
-Left Home
-Right Home
-```
-
-不会：
-
-```text
-跨越中心线
-腕部内翻
-IK 跳解
-撞桌
-撞身体
-```
-
----
-
-# 25. PUT 坐标
-
-PUT 坐标通常和：
-
-```text
-机器人 base
-工作台位置
-桌面高度
-机器人安装位置
-```
-
-强相关。
-
-例如：
-
-```python
-FIXED_PUT_RIGHT_XYZ = (...)
-FIXED_PUT_LEFT_XYZ  = (...)
-```
-
-换机器人后建议重新测。
-
-特别确认：
-
-```text
-right put x/y/z
-left put x/y/z
-release height
-arc height
-workspace safety
-```
-
----
-
-# 26. 工作空间几何
-
-新机器人建议重新测量：
-
-```text
-base_link origin
-table plane Z
-minimum safe Z
-maximum usable Z
-body centerline y=0
-left workspace
-right workspace
-camera workspace
-```
-
-项目中的抓取 policy 可以继续使用类似：
-
-```text
-Left arm → y > 0
-Right arm → y < 0
-Do not cross y = 0
-Approach inward
-Elbow stays on own side
-Wrist stays on own side
-Avoid joint limits
-Prefer continuous IK solution
-```
-
-但这些规则依赖新机器人的 base frame 定义是否一致。
-
----
-
-# 27. 推荐的新机器人配置结构
-
-长期建议把硬件绑定参数从 Python 中拆出来。
-
-```text
-config/
-├── hardware.yaml
-├── calibration.yaml
-├── models.yaml
-├── grasp_core/resources/tool.yaml
-├── workspace.yaml
-└── profiles/
-    ├── robot_old.yaml
-    └── robot_new.yaml
-```
-
----
-
-## 27.1 hardware.yaml
-
-```yaml
-robot:
-  ip: "ROBOT_IP"
-
-camera:
-  serial: "D455_SERIAL"
-
-gripper:
-  left_server: "192.168.x.x:55551"
-  right_server: "192.168.x.x:55551"
-
-frames:
-  base: "base_link"
-  camera: "camera_rgb_link"
-  left_tcp: "left_tool"
-  right_tcp: "right_tool"
-```
-
----
-
-## 27.2 models.yaml
-
-```yaml
-sam3_checkpoint: /home/<USER>/marvinGrasp/perception/models/sam3.pt
-
-flowpose:
-  flownet_checkpoint: /home/<USER>/marvinGrasp/perception/models/FlowNet3.pth
-  scalenet_checkpoint: /home/<USER>/marvinGrasp/perception/models/ScaleNet3.pth
-
-dinov2_root: /home/<USER>/dinov2
-```
-
----
-
-## 27.3 calibration.yaml
-
-```yaml
-camera_extrinsic:
-  parent: base_link
-  child: camera_rgb_link
-
-  translation:
-    x: 0.0
-    y: 0.0
-    z: 0.0
-
-  quaternion:
-    x: 0.0
-    y: 0.0
-    z: 0.0
-    w: 1.0
-```
-
----
-
-## 27.4 workspace.yaml
-
-```yaml
-table_z: 0.0
-
-home:
-  left: []
-  right: []
-
-put:
-  left: [0.0, 0.0, 0.0]
-  right: [0.0, 0.0, 0.0]
-
-workspace:
-  centerline_y: 0.0
-  min_z: 0.0
-  max_z: 0.0
-```
-
----
-
-# 28. 推荐运行顺序
-
-不要第一次就启动完整自动抓取。
-
-推荐：
-
-```text
-① Ubuntu / Driver / CUDA
-        ↓
-② Conda / Python
-        ↓
-③ PyTorch CUDA
-        ↓
-④ marvinGrasp
-        ↓
-⑤ SAM3
-        ↓
-⑥ FlowPose
-        ↓
-⑦ DINOv2
-        ↓
-⑧ RealSense
-        ↓
-⑨ Vision Only
-        ↓
-⑩ ROS2 / Robot Workspace
-        ↓
-⑪ TF
-        ↓
-⑫ Camera Extrinsic Calibration
-        ↓
-⑬ RViz Pose Validation
-        ↓
-⑭ IK Only
-        ↓
-⑮ Gripper Only
-        ↓
-⑯ Home
-        ↓
-⑰ Cube Pick
-        ↓
-⑱ PUT
-        ↓
-⑲ Pen / Screwdriver Policy
-        ↓
-⑳ Drop / Retry / Pause Recovery
-        ↓
-㉑ Full Auto Pipeline
-```
-
----
-
-# 29. 分阶段验收 Checklist
-
-## Stage A：GPU
-
-```bash
-nvidia-smi
-```
-
-```bash
-python -c "import torch; print(torch.cuda.is_available())"
-```
-
-要求：
-
-```text
-True
-```
-
----
-
-## Stage B：SAM3
-
-```bash
-python -c "import sam3; print(sam3.__file__)"
-```
-
-要求：
-
-```text
-Import success
-```
-
-并确认：
-
-```text
-perception/models/sam3.pt
-```
-
-存在。
-
----
-
-## Stage C：FlowPose
-
-确认：
-
-```text
-FlowNet3.pth
-ScaleNet3.pth
-DINOv2
-```
-
-全部能加载。
-
-先做：
-
-```text
-offline image
-```
-
-或：
-
-```text
-camera inference only
-```
-
-不要控制机械臂。
-
----
-
-## Stage D：RealSense
-
-```bash
-rs-enumerate-devices
-```
-
-```bash
-python -c "import pyrealsense2"
-```
-
-要求：
-
-```text
-RGB
-Depth
-Intrinsics
-Depth Scale
-Serial
-```
-
-全部正常。
-
----
-
-## Stage E：ROS
-
-```bash
-ros2 node list
-ros2 topic list
-```
-
-确认：
-
-```text
-joint_states
-IK node
-controller
-robot driver
-```
-
-正常。
-
----
-
-## Stage F：TF
-
-```bash
-ros2 run tf2_ros tf2_echo base_link camera_rgb_link
-```
-
-```bash
-ros2 run tf2_ros tf2_echo base_link left_tool
-```
-
-```bash
-ros2 run tf2_ros tf2_echo base_link right_tool
-```
-
-要求：
-
-```text
-TF continuous
-No missing transform
-Frame names correct
-```
-
----
-
-## Stage G：Camera Calibration
-
-重新得到：
-
-```text
-T_base_camera
-```
-
-然后通过 RViz 验证：
-
-```text
-estimated object frame
-≈
-real object
-```
-
----
-
-## Stage H：IK
-
-先发送一个：
-
-```text
-known
-safe
-reachable
-slow
-```
-
-目标。
-
-不要从 FlowPose 直接控制实机。
-
----
-
-## Stage I：Gripper
-
-分别测试：
-
-```text
-Left open
-Left close
-Left feedback
-
-Right open
-Right close
-Right feedback
-```
-
-重新标定：
-
-```text
-empty-close
-object-grip
-drop
-```
-
-反馈范围。
-
----
-
-## Stage J：Home
-
-```text
-Single arm
-Low speed
-No object
-```
-
-确认：
-
-```text
-No violent jump
-No IK flip
-No collision
-```
-
----
-
-## Stage K：Cube
-
-Cube 是最适合作为第一件测试物体的对象。
-
-先验证：
-
-```text
-Detection
-Segmentation
-FlowPose
-TF
-Policy
-IK
-Pick
-```
-
-不要第一件就测试 pen / screwdriver。
-
----
-
-## Stage L：PUT
-
-重新标定：
-
-```text
-RIGHT PUT
-LEFT PUT
-```
-
-确认：
-
-```text
-Final XYZ
-Release Height
-Trajectory Height
-End Orientation
-```
-
----
-
-## Stage M：Long Object
-
-再测试：
-
-```text
-pen
-yellow_screwdriver_handle
-red_screwdriver_handle
-```
-
-确认：
-
-```text
-Policy Y = physical long axis
-Policy Z = world +Z
-Policy X = Y × Z
-```
-
-以及：
-
-```text
-+Y sign points to correct robot side
-```
-
-再验证 YAML 中类似：
-
-```text
-Y -0.04 / -0.05
-```
-
-的偏移是否始终加到正确的一侧。
-
----
-
-## Stage N：Recovery
-
-最后测试：
-
-```text
-S pause
-S resume
-Home
-Grip failure
-Object drop
-Retry
-Return Home
-```
-
-因为这些功能都会真正触发机器人运动，不应该在基础坐标和 IK 尚未确认前测试。
-
----
-
-# 30. 常见问题
-
-## `No module named sam3`
+~~~
+
+补充安装兼容依赖和旧脚本依赖：
+
+~~~
+python -m pip install --upgrade pip wheel
+python -m pip install "setuptools<81"
+python -m pip install cutoop ultralytics
+~~~
 
 说明：
 
-```text
-SAM3 package 未安装
-```
+- cutoop 主要用于旧版数据集评估脚本。
+- ultralytics 主要用于旧版 infer_rs.py / infer_rs_kp.py。
+- 当前主应用的 SAM3 → FlowPose 流程不依赖 YOLO，但建议完整安装。
+- 使用 environment-flowpose.yml 后，不要再无条件执行旧 requirements.txt，因为其中的 OpenCV 版本可能覆盖当前环境。
 
-而不是：
+## 6. 安装匹配 CUDA Toolkit
 
-```text
-sam3.pt 缺失
-```
+环境文件中的 PyTorch 使用 CUDA 12.1。编译 PointNet2 前安装匹配的 Toolkit：
 
-处理：
+~~~
+conda activate flowpose
+conda install -n flowpose -c nvidia cuda-toolkit=12.1 -y
+~~~
 
-```bash
-cd ~/sam3
-pip install -e .
-```
+设置编译环境：
+
+~~~
+export CUDA_HOME="$CONDA_PREFIX"
+export PATH="$CUDA_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$CONDA_PREFIX/lib/python3.10/site-packages/torch/lib:${LD_LIBRARY_PATH:-}"
+
+which nvcc
+nvcc --version
+~~~
+
+CUDA Toolkit 版本应与 PyTorch 的 CUDA 版本保持一致或兼容。不要仅依赖系统 CUDA 12.8 编译当前 PyTorch 12.1 环境。
+
+## 7. 安装 / 验证 SAM3
+
+environment-flowpose.yml 已经包含：
+
+~~~
+-e ./perception/sam3
+~~~
+
+如果是手工创建环境，则执行：
+
+~~~
+cd "$REPO_ROOT"
+python -m pip install -e perception/sam3
+~~~
 
 验证：
 
-```bash
-python -c "import sam3"
-```
+~~~
+python -c "import sam3; print('SAM3:', sam3.__file__)"
+~~~
 
----
+SAM3 源码和模型权重是两件不同的东西。检查权重：
 
-## `sam3.pt not found`
+~~~
+test -s "$REPO_ROOT/perception/models/sam3.pt"
+~~~
 
-说明：
+如果缺少 sam3.pt，需要从旧主机或模型提供方复制，不能只安装 Python package。
 
-```text
-Python package 已安装
-但 checkpoint 路径错误
-```
+## 8. 编译 PointNet2 CUDA 扩展
+
+FlowPose 的 PointNet2 CUDA 扩展是必须组件：
+
+~~~
+conda activate flowpose
+
+export CUDA_HOME="$CONDA_PREFIX"
+export PATH="$CUDA_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$CONDA_PREFIX/lib/python3.10/site-packages/torch/lib:${LD_LIBRARY_PATH:-}"
+
+cd "$REPO_ROOT/perception/flowpose/networks/pts_encoder/pointnet2_utils/pointnet2"
+python setup.py install
+~~~
+
+验证时必须先导入 torch：
+
+~~~
+cd "$REPO_ROOT"
+python -c "import torch; import pointnet2_cuda; print('PointNet2 CUDA OK')"
+~~~
+
+如果出现 libc10.so 找不到，通常是：
+
+1. 没有先 import torch；
+2. LD_LIBRARY_PATH 没有包含 PyTorch 的 torch/lib；
+3. 扩展是用另一套 PyTorch 或 CUDA 编译的。
+
+修复后重新执行 python setup.py install。
+
+## 9. 准备 FlowPose 模型
+
+检查当前模型：
+
+~~~
+test -s "$REPO_ROOT/perception/models/FlowNet3.pth"
+test -s "$REPO_ROOT/perception/models/ScaleNet3.pth"
+~~~
+
+如果缺失，从旧主机复制：
+
+~~~
+cp /path/to/FlowNet3.pth "$REPO_ROOT/perception/models/FlowNet3.pth"
+cp /path/to/ScaleNet3.pth "$REPO_ROOT/perception/models/ScaleNet3.pth"
+~~~
+
+旧版脚本中的 results/ckpts/... 路径不等于当前主应用默认使用的 perception/models/... 路径。
+
+## 10. 准备 DINOv2
+
+FlowPose 使用 DINOv2 提取 RGB 特征。推荐使用本地源码和 checkpoint：
+
+~~~
+cd "$REPO_ROOT/perception/models"
+
+git clone https://github.com/facebookresearch/dinov2.git \
+  facebookresearch_dinov2_main
+
+wget -O dinov2_vits14_pretrain.pth \
+  https://dl.fbaipublicfiles.com/dinov2/dinov2_vits14_pretrain.pth
+~~~
 
 检查：
 
-```bash
-ls ~/marvinGrasp/perception/models/
-```
+~~~
+test -d "$REPO_ROOT/perception/models/facebookresearch_dinov2_main"
+test -s "$REPO_ROOT/perception/models/dinov2_vits14_pretrain.pth"
+~~~
 
----
+也可以从旧主机复制 DINOv2 源码和 checkpoint。
 
-## `torch.cuda.is_available() == False`
+注意：当前 DinoLoader 使用本地仓库时会以 pretrained=False 加载模型，然后再读取 checkpoint。如果本地 checkpoint 不存在，可能使用未训练的 DINO 权重，导致 FlowPose 结果不可用。
 
-优先检查：
+## 11. 全部依赖验证
 
-```text
-NVIDIA Driver
-PyTorch CUDA build
-Conda environment
-```
+~~~
+conda activate flowpose
+cd "$REPO_ROOT"
 
-而不是 FlowPose。
+python -c "import torch; print('Torch:', torch.__version__); print('Torch CUDA:', torch.version.cuda); print('CUDA available:', torch.cuda.is_available())"
+python -c "import cv2, scipy, open3d, pyrealsense2, webdataset, timm; print('FlowPose Python dependencies OK')"
+python -c "import sam3; print('SAM3 OK')"
+python -c "import torch; import pointnet2_cuda; print('PointNet2 CUDA OK')"
+~~~
 
----
+检查 FlowPose 源码导入：
 
-## `No module named rclpy`
+~~~
+export PYTHONPATH="$REPO_ROOT:$REPO_ROOT/perception/flowpose:${PYTHONPATH:-}"
 
-优先检查：
+python -c "from networks.pts_encoder.pointnet2 import Pointnet2ClsMSGFus; print('FlowPose network import OK')"
+python -c "from networks.dino.dino import DinoLoader; print('DINO loader import OK')"
+~~~
 
-```bash
-source /opt/ros/humble/setup.bash
-```
+检查模型文件：
 
-不要直接认为需要 `pip install rclpy`。
+~~~
+test -s "$REPO_ROOT/perception/models/FlowNet3.pth" && echo FlowNet3 OK
+test -s "$REPO_ROOT/perception/models/ScaleNet3.pth" && echo ScaleNet3 OK
+test -s "$REPO_ROOT/perception/models/sam3.pt" && echo SAM3 checkpoint OK
+test -s "$REPO_ROOT/perception/models/dinov2_vits14_pretrain.pth" && echo DINO checkpoint OK
+~~~
 
----
+## 12. 验证 RealSense
 
-## RealSense 找不到
-
-检查：
-
-```bash
+~~~
 rs-enumerate-devices
-lsusb
-```
+python -c "import pyrealsense2 as rs; print('RealSense devices:', rs.context().query_devices().size())"
+~~~
 
-然后再排查：
+如果没有设备，检查：
 
-```text
-USB
-librealsense
-permissions
-serial
-```
+~~~
+USB 连接
+RealSense udev 规则
+相机是否被其他进程占用
+当前用户是否具有 USB 设备访问权限
+~~~
 
----
+新相机必须查询真实序列号，启动时传入：
 
-## Vision 正确，但机械臂抓偏
+~~~
+--serial <REAL_CAMERA_SERIAL>
+~~~
 
-优先检查：
+## 13. 完整应用依赖
 
-```text
+完整机器人应用还需要夹爪 SDK 和 ROS2。
+
+夹爪 SDK：
+
+~~~
+conda activate flowpose
+cd "$REPO_ROOT"
+
+python -m pip install -r daimon_gripper/dm_gripper_py/requirement.txt
+python -m pip install -e daimon_gripper/dm_gripper_py
+~~~
+
+ROS2 验证：
+
+~~~
+source /opt/ros/humble/setup.bash
+python -c "import rclpy; print('rclpy OK')"
+python -c "from geometry_msgs.msg import PoseStamped; print('geometry_msgs OK')"
+python -c "from sensor_msgs.msg import JointState; print('sensor_msgs OK')"
+~~~
+
+完整应用还需要：
+
+~~~
+request_ik 节点
+机器人 URDF / xacro
+base_link / marker frame
+左右臂 HOME 姿态
+机器人 IP
+夹爪 gRPC 地址
+~~~
+
+## 14. 启动完整 FlowPose 应用
+
+先启动 ROS2 和机器人控制节点，再执行：
+
+~~~
+source /opt/ros/humble/setup.bash
+conda activate flowpose
+cd "$REPO_ROOT"
+
+python flowpose_request_ik_tester.py \
+  --serial <REAL_CAMERA_SERIAL> \
+  --sam3-root "$REPO_ROOT/perception/sam3" \
+  --sam3-checkpoint-path "$REPO_ROOT/perception/models/sam3.pt" \
+  --flow-model-path "$REPO_ROOT/perception/models/FlowNet3.pth" \
+  --scale-model-path "$REPO_ROOT/perception/models/ScaleNet3.pth" \
+  --dino-repo-path "$REPO_ROOT/perception/models/facebookresearch_dinov2_main" \
+  --dino-ckpt-path "$REPO_ROOT/perception/models/dinov2_vits14_pretrain.pth" \
+  --flowpose-device cuda
+~~~
+
+实际抓取前必须重新确认：
+
+~~~
 T_base_camera
-camera frame convention
-base_link
-TCP
-object Z override
-```
+RealSense serial
+camera_joint
+robot URDF / TCP
+Home
+Put position
+Table Z
+workspace boundary
+gripper IP
+gripper calibration
+~~~
 
-不要第一时间怀疑 SAM3。
+## 15. 旧版 FlowPose 脚本
 
----
+旧脚本包括：
 
-## 末端走到错误姿态
+~~~
+perception/flowpose/scripts/infer_rs.sh
+perception/flowpose/scripts/infer_rs_kp.sh
+perception/flowpose/scripts/infer.sh
+~~~
 
-优先区分：
+这些脚本可能依赖：
 
-```text
-object pose orientation error
-policy error
-TCP convention
-IK multiple-solution jump
-trajectory discontinuity
-```
+~~~
+results/ckpts/YOLO/mixed.pt
+results/ckpts/...
+~~~
 
----
+使用前必须确认对应 YOLO 和 FlowPose checkpoint 存在。否则优先使用第 14 节的当前主应用入口。
 
-## 抓取正确但 PUT 错
+旧版脚本的基本启动形式：
 
-重点检查：
+~~~
+conda activate flowpose
+cd "$REPO_ROOT/perception/flowpose"
 
-```text
-FIXED_PUT_LEFT_XYZ
-FIXED_PUT_RIGHT_XYZ
-table Z
-new robot base
-release height
-```
+PYTHONPATH=. python py_runners/infer_rs.py \
+  --tracking \
+  --realsense \
+  --pretrained_flow_model_path "$REPO_ROOT/perception/models/FlowNet3.pth" \
+  --pretrained_scale_model_path "$REPO_ROOT/perception/models/ScaleNet3.pth" \
+  --device cuda \
+  --data_mode rs
+~~~
 
----
+该入口仍可能要求旧版 YOLO 权重，不代表当前主应用的完整验证已经通过。
 
-# 31. 新机器人必改项总表
+## 16. 常见问题
 
-| 配置 | 是否可以直接复制旧值 |
-|---|---|
-| Git code | 可以 |
-| SAM3 logic | 可以 |
-| FlowPose policy | 可以 |
-| Cube policy | 可以 |
-| Long-object policy | 可以 |
-| Model checkpoints | 可以复制 |
-| Python package versions | 建议复现 |
-| RealSense serial | 不可以 |
-| Camera extrinsic | 不可以 |
-| Robot IP | 需确认 |
-| Gripper IP | 需确认 |
-| Gripper calibration | 建议重新做 |
-| URDF | 需确认 |
-| TCP transform | 需确认 |
-| Joint limits | 需确认 |
-| Home | 必须验证 |
-| PUT XYZ | 建议重新标定 |
-| Table Z | 必须重新确认 |
-| Workspace | 必须重新确认 |
+### 16.1 环境名错误
 
----
+旧 README 中类似：
 
-# 32. 最终环境树
+~~~
+conda create -n genpose2 ...
+conda activate flowpose
+~~~
 
-```text
-Ubuntu 22.04
-│
-├── NVIDIA Driver
-│   └── CUDA / PyTorch
-│
-├── Conda
-│   └── flowpose / Python 3.10
-│       │
-│       ├── PyTorch
-│       ├── NumPy
-│       ├── OpenCV
-│       ├── SciPy
-│       │
-│       ├── SAM3
-│       │   └── sam3.pt
-│       │
-│       ├── FlowPose
-│       │   ├── FlowNet3.pth
-│       │   ├── ScaleNet3.pth
-│       │   └── DINOv2
-│       │
-│       ├── pyrealsense2
-│       └── grpc / protobuf
-│
-├── ROS2 Humble
-│   │
-│   ├── rclpy
-│   ├── tf2
-│   ├── marvin_description
-│   ├── URDF
-│   ├── IK / QP
-│   ├── controller
-│   └── robot driver
-│
-├── RealSense
-│   ├── librealsense
-│   └── D455
-│
-├── Network
-│   ├── Robot
-│   ├── Left Gripper
-│   └── Right Gripper
-│
-└── Calibration
-    ├── T_base_camera
-    ├── Gripper calibration
-    ├── Home
-    ├── PUT
-    ├── Table Z
-    └── Workspace
-```
+这是错误的。统一使用 flowpose。
 
----
+### 16.2 CUDA available: False
 
-# 33. 建议最终目标
+依次检查：
 
-新主机迁移完成后，应该达到下面的状态：
+~~~
+nvidia-smi
+which nvcc
+python -c "import torch; print(torch.version.cuda, torch.cuda.is_available())"
+~~~
 
-```text
-Camera
-  ↓
-RGB-D
-  ↓
-SAM3
-  ↓
-Mask
-  ↓
-FlowPose
-  ↓
-6D Pose
-  ↓
-T_base_camera
-  ↓
-Object Pose in base_link
-  ↓
-Grasp Policy
-  ↓
-IK / QP
-  ↓
-Smooth Cartesian Trajectory
-  ↓
-Robot
-  ↓
-Gripper
-  ↓
-Pick
-  ↓
-Put
-  ↓
-Drop Detection / Retry / Home
-```
+nvidia-smi 失败时先修复 NVIDIA 驱动；安装 CUDA Toolkit 不能替代驱动。
 
-不要把：
+### 16.3 PointNet2 编译失败
 
-```text
-程序能启动
-```
+检查：
 
-当成迁移成功。
+~~~
+conda activate flowpose
+echo "$CUDA_HOME"
+nvcc --version
+python -c "import torch; print(torch.__version__, torch.version.cuda)"
+~~~
 
-真正的迁移完成标准应该是：
+确认 CUDA_HOME 指向与 PyTorch 匹配的 Toolkit，然后重新安装：
 
-```text
-视觉坐标正确
-TF 正确
-IK 正确
-夹爪正确
-路径正确
-异常恢复正确
-```
+~~~
+cd "$REPO_ROOT/perception/flowpose/networks/pts_encoder/pointnet2_utils/pointnet2"
+python setup.py clean --all
+python setup.py install
+~~~
 
-并且在新机器人上完成至少一次稳定的：
+### 16.4 No module named sam3
 
-```text
-Detect
-→ Pose
-→ Pick
-→ Put
-→ Home
-```
+~~~
+conda activate flowpose
+cd "$REPO_ROOT"
+python -m pip install -e perception/sam3
+python -c "import sam3; print(sam3.__file__)"
+~~~
 
-闭环。
+### 16.5 sam3.pt 找不到
 
----
-1
-cd /home/kewei/apex-main/apex
+~~~
+test -s "$REPO_ROOT/perception/models/sam3.pt"
+~~~
+
+源码安装成功不等于模型权重存在。
+
+### 16.6 DINO 没有权重
+
+必须同时存在：
+
+~~~
+facebookresearch_dinov2_main/
+dinov2_vits14_pretrain.pth
+~~~
+
+不要只创建空目录，否则可能加载未训练的特征提取器。
+
+### 16.7 ultralytics 缺失
+
+仅当使用旧版 RealSense YOLO 脚本时安装：
+
+~~~
+conda activate flowpose
+python -m pip install ultralytics
+~~~
+
+### 16.8 rclpy 导入失败
+
+先 source ROS2：
+
+~~~
 source /opt/ros/humble/setup.bash
-source install/setup.bash
-export APEX_ROBOT_PLATFORM=pro
+conda activate flowpose
+python -c "import rclpy; print('rclpy OK')"
+~~~
 
-ros2 launch marvin_ros_control bringup_control_matrix.launch.py \
-  arm_model:=m6_696 \
-  base_model:=new 
-  
-2
-cd /home/kewei/apex-main/apex
-source /opt/ros/humble/setup.bash
-source install/setup.bash 
-export APEX_ROBOT_PLATFORM=pro
+如果仍失败，检查 ROS2 Python 版本与 Conda Python 是否都是 Python 3.10，并确认没有被其他 Conda 环境覆盖。
 
-ros2 launch marvin_qp_controller request_ik_tester.launch.py \
-  arm_model:=m6_696 \
-  base_model:=new \
-  scene_file:=matrix/m6_696.xml \
-  use_rviz:=true \
-  use_interactive_marker:=true \
-  joint_cmd_mux_initial_input:=1
-  
-3
-cd /home/kewei/apex-main/apex
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-export APEX_ROBOT_PLATFORM=pro
+## 17. 最终验收清单
 
-ros2 service call /control/set_ready std_srvs/srv/Trigger "{}"
-ros2 service call /control/set_mode marvin_msgs/srv/Int "{data: 1}"
-ros2 service call /control/set_input marvin_msgs/srv/Int "{data: 1}"    
-  use_rviz:=true
-  
-# 34. 推荐迁移原则
+主机和软件：
 
-一句话总结：
+~~~
+[ ] Ubuntu 22.04
+[ ] nvidia-smi 正常
+[ ] CUDA Toolkit 12.1 可用
+[ ] flowpose 环境存在
+[ ] Python 3.10
+[ ] PyTorch 2.5.1
+[ ] torch.cuda.is_available() 为 True
+[ ] PointNet2 CUDA 扩展可导入
+[ ] SAM3 package 可导入
+[ ] sam3.pt 存在
+[ ] FlowNet3.pth 存在
+[ ] ScaleNet3.pth 存在
+[ ] DINOv2 源码和 checkpoint 存在
+[ ] pyrealsense2 可导入
+[ ] RealSense 可以被检测
+[ ] ROS2 Humble 可用
+[ ] rclpy / geometry_msgs / sensor_msgs 可导入
+~~~
 
-> **代码和算法策略可以继承；模型权重要复制；软件环境要复现；相机外参、机器人运动学/TCP、网络、夹爪标定以及 Home / Put / Table / Workspace 参数要针对新机器人重新确认。**
+机器人：
+
+~~~
+[ ] 相机序列号已确认
+[ ] 相机外参已确认
+[ ] robot URDF / xacro 正确
+[ ] camera_joint 正确
+[ ] base_link / marker frame 正确
+[ ] request_ik 节点正常
+[ ] HOME 姿态已确认
+[ ] Put 位姿已确认
+[ ] Table Z 已确认
+[ ] 夹爪服务地址正确
+[ ] 夹爪标定参数正确
+[ ] 机器人和夹爪网络连通
+~~~
+
+完成以上检查后，再执行完整抓取流程。

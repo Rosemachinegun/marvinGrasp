@@ -1,230 +1,346 @@
-# marvinGrasp 代码架构
+# marvinGrasp
 
-marvinGrasp 是一个基于 RealSense、SAM3、FlowPose、ROS2 和 request_ik 的机器人抓取系统。代码按“感知、目标排序、抓取规划、动作执行、底层通信”分层组织。
+基于 RealSense、SAM3、FlowPose、ROS2 和 request_ik 的 Marvin 机器人视觉抓取系统。
 
-## 目录结构
+~~~text
+RealSense → SAM3 分割 → FlowPose 6D 位姿 → 抓取规划 → request_ik → 夹爪
+~~~
 
-```text
+## 功能
+
+- RealSense RGB-D 图像采集
+- SAM3 开放词汇目标分割
+- FlowPose 6D 位姿和尺寸估计
+- 目标过滤、聚类和抓取排序
+- Box、Cuboid、长物体抓取策略
+- 平滑笛卡尔轨迹规划
+- ROS2 request_ik 目标发布
+- 夹爪控制、放置和失败恢复
+
+## 文件架构
+
+核心模块之间的调用关系如下：
+
+~~~mermaid
+flowchart TD
+    U[flowpose_request_ik_tester.py] --> A[grasp_core/tools/flowpose_request_ik_app.py]
+
+    A --> C[grasp_core/perception/]
+    A --> P[grasp_core/planning/]
+    A --> E[grasp_core/execution/]
+    A --> M[grasp_core/communication/]
+
+    C --> R[RealSense]
+    C --> S[perception/sam3/]
+    C --> F[perception/flowpose/]
+    C --> W[perception/models/]
+
+    S --> SM[sam3.pt]
+    F --> FM[FlowNet3.pth / ScaleNet3.pth]
+    F --> D[DINOv2]
+    W --> SM
+    W --> FM
+    W --> D
+
+    C --> T[TargetObjectPose]
+    T --> P
+    P --> E
+    E --> M
+    M --> I[ROS2 / request_ik]
+    M --> G[夹爪 gRPC / TCP]
+~~~
+
+关键目录：
+
+~~~text
 marvinGrasp/
+├── flowpose_request_ik_tester.py       主入口
 ├── grasp_core/
-│   ├── tools/
-│   │   └── flowpose_request_ik_app.py   主应用和状态机
-│   ├── perception/
-│   │   ├── realsense_sam3.py             RealSense和SAM3基础接口
-│   │   ├── flowpose_pipeline.py          SAM3/FlowPose推理流程
-│   │   └── perception_runtime.py         异步结果收集、坐标转换、目标排序入口
-│   ├── planning/
-│   │   ├── grasp/
-│   │   │   ├── planner.py                唯一抓取规划入口
-│   │   │   ├── target_order.py            DBSCAN聚类和抓取顺序
-│   │   │   └── policies/
-│   │   │       ├── box_symmetry.py       Box/Cuboid姿态策略
-│   │   │       ├── long_object.py         长物体/长方体抓取策略
-│   │   │       └── ribbon.py              Ribbon特殊成功判定
-│   │   └── trajectory/
-│   │       ├── planner.py                笛卡尔轨迹规划
-│   │       ├── interpolation.py          轨迹插值
-│   │       └── orientation.py            姿态插值
-│   ├── execution/
-│   │   ├── robot_skill_service.py        抓取、放置、HOME统一服务
-│   │   ├── motion_executor.py            IK轨迹发布和执行
-│   │   ├── config.py                     执行层配置
-│   │   ├── drop_monitor.py               掉落检测
-│   │   └── skills/
-│   │       ├── grasp.py                  抓取动作执行和反馈处理
-│   │       ├── place.py                  放置动作执行
-│   │       └── home.py                   HOME和失败恢复
-│   ├── core/
-│   │   ├── math/                         位姿、四元数、坐标和物体轴线
-│   │   ├── types/                        TargetObjectPose等数据结构
-│   │   └── io/                           感知结果和目标加载
-│   ├── communication/                    ROS2、IK和夹爪通信
-│   ├── config/                           参数解析和配置归一化
-│   └── resources/                        tool.yaml、机器人模型等资源
+│   ├── perception/                     RealSense、SAM3、FlowPose
+│   ├── planning/                       抓取目标和轨迹规划
+│   ├── execution/                      抓取、放置、HOME、恢复
+│   ├── communication/                  ROS2、IK、夹爪通信
+│   ├── core/                           位姿、数学和数据结构
+│   └── config/                         参数和路径配置
 ├── perception/
-│   ├── sam3/                             SAM3源码
-│   ├── flowpose/                         FlowPose源码
-│   └── models/                           模型权重目录
-├── daimon_gripper/                       夹爪SDK和夹爪信号接收器
-├── eye2hand_calibration/                 手眼标定工具
-├── tests/                                单元测试和流程测试
-└── flowpose_request_ik_tester.py         启动脚本
-```
+│   ├── sam3/                           SAM3 源码
+│   ├── flowpose/                       FlowPose 源码和 PointNet2 CUDA 源码
+│   └── models/                         模型权重，默认不上传 Git
+├── daimon_gripper/                     夹爪 SDK 和接收器
+├── environment-flowpose.yml            Conda 环境
+├── env.md                              完整部署和故障排查
+└── README.md                           安装和使用说明
+~~~
 
-## 主应用调用链
+## 环境要求
 
-```text
-flowpose_request_ik_tester.py
-        ↓
-flowpose_request_ik_app.py
-        ↓
-启动时左右机械臂回 HOME
-        ↓
-RealSense采集图像
-        ↓
-SAM3检测实例 mask
-        ↓
-FlowPose计算物体 6D pose 和尺寸
-        ↓
-转换到 base_link 坐标系
-        ↓
-target_order.py 过滤、DBSCAN聚类、目标排序
-        ↓
-UnifiedGraspPlanner生成抓取计划
-        ↓
-motion_executor发布IK轨迹
-        ↓
-夹爪执行 grip
-        ↓
-确认抓取、Place、失败恢复或重抓
-```
+| 项目 | 要求 |
+|---|---|
+| 操作系统 | Ubuntu 22.04 |
+| Python | 3.10 |
+| Conda 环境 | flowpose |
+| PyTorch | 2.5.1 |
+| CUDA | 12.1 |
+| ROS2 | Humble |
+| GPU | NVIDIA CUDA GPU |
+| 相机 | Intel RealSense D455 或兼容型号 |
 
-## 感知和目标排序
+详细迁移、驱动、标定和故障排查说明见 [env.md](env.md)。
 
-`perception_runtime.py` 负责将 FlowPose 输出转换成 `TargetObjectPose`，并调用 `target_order.py`。
+## 安装
 
-```text
-FlowPose目标
-    ↓
-转换到 base_link
-    ↓
-按体积过滤
-    ├── volume > 0.0005 m³：丢弃
-    └── 其他目标：保留
-    ↓
-使用 XY 中心点执行 DBSCAN
-    ↓
-单物体聚类优先
-    ↓
-单物体按距离 base_link 原点最近排序
-    ↓
-多物体聚类内部选择距离聚类中心最远的物体
-    ↓
-剩余物体按距离机器人排序
-    ↓
-排序结果的 targets[0] 作为首个抓取目标
-```
+### 1. 获取代码
 
-DBSCAN 默认参数：
+~~~bash
+cd /home/jjj/code
+git clone https://github.com/Rosemachinegun/marvinGrasp.git
+cd marvinGrasp
+~~~
 
-```text
-eps = 0.12 m
-min_samples = 1
-聚类坐标 = base_link 下的 XY
-```
+### 2. 安装系统依赖
 
-每个目标的名称使用统一实例编号，例如 `pen_0`、`pen_1`、`pen_2`。SAM3、FlowPose、`TargetObjectPose` 和 OBB 可视化应使用同一个实例名称，不能在中间重新编号。
+~~~bash
+sudo apt update
+sudo apt install -y \
+  build-essential gcc g++ make cmake ninja-build git pkg-config \
+  libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+  libusb-1.0-0
+~~~
 
-## 抓取规划架构
+确认 NVIDIA 驱动和 ROS2：
 
-所有抓取姿态和抓取轨迹规划统一由 `UnifiedGraspPlanner` 负责，包括：
+~~~bash
+nvidia-smi
+source /opt/ros/humble/setup.bash
+ros2 doctor --report
+~~~
 
-- Box/Cuboid策略选择
-- 长物体姿态计算
-- 普通目标姿态计算
-- `tool.yaml` 模板加载和展开
-- pregrasp/grasp姿态生成
-- TCP、旋转和 downward tilt 修正
-- 抓取轨迹和夹爪触发点生成
+RealSense 工具：
 
-`execution/skills/grasp.py` 中的 `GraspPlanner` 只保留执行层适配功能，主要用于读取机械臂当前起始姿态，并调用 `UnifiedGraspPlanner`。它不再维护另一套规划算法。
+~~~bash
+sudo apt install -y librealsense2-utils librealsense2-dev
+rs-enumerate-devices
+~~~
 
-抓取执行链：
+### 3. 创建 Conda 环境
 
-```text
-RobotActionService.publish_grasp()
-        ↓
-GraspSkill.execute()
-        ↓
-execute_grasp()
-        ↓
-读取当前机械臂姿态
-        ↓
-UnifiedGraspPlanner
-        ↓
-模板轨迹或计算轨迹
-        ↓
-发布request_ik轨迹
-        ↓
-最终点触发夹爪
-        ↓
-处理夹爪结果
-```
+必须在仓库根目录执行：
 
-规划层不负责 ROS 发布和夹爪通信；执行层不重复实现抓取姿态算法。
+~~~bash
+conda env create -f environment-flowpose.yml
+conda activate flowpose
+~~~
 
-## Box/Cuboid策略
+如果环境已经存在：
 
-Box 和 Cuboid 统一进入抓取规划流程。尺寸分类由 `core/math/object_axes.py` 集中处理：
+~~~bash
+conda activate flowpose
+conda env update -n flowpose -f environment-flowpose.yml
+~~~
 
-```text
-最大边 / 最小边 ≤ 1.2：cube
-最大边 / 最小边 > 1.2：cuboid
-```
+补充依赖：
 
-`box_symmetry.py` 负责 Box/Cuboid 的等价旋转和夹爪方向选择；`long_object.py` 负责长轴方向、闭合轴和长物体专用抓取轨迹。
+~~~bash
+python -m pip install --upgrade pip wheel
+python -m pip install "setuptools<81"
+python -m pip install cutoop ultralytics
+~~~
 
-## Place、HOME和失败恢复
+### 4. 安装 CUDA Toolkit 并编译 PointNet2
 
-应用启动时先执行左右臂 HOME，成功后才进入任务循环。
+~~~bash
+conda activate flowpose
+conda install -n flowpose -c nvidia cuda-toolkit=12.1 -y
 
-抓取成功后的流程为：
+export CUDA_HOME="$CONDA_PREFIX"
+export PATH="$CUDA_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:$CONDA_PREFIX/lib/python3.10/site-packages/torch/lib:$LD_LIBRARY_PATH"
 
-```text
-grasp confirmed
-    ↓
-Place移动
-    ↓
-夹爪release
-    ↓
-Place完成
-    ↓
-读取最新相机帧
-    ↓
-重新执行SAM3 + FlowPose
-    ↓
-重新排序
-    ↓
-下一次抓取
-```
+cd perception/flowpose/networks/pts_encoder/pointnet2_utils/pointnet2
+python setup.py install
+cd /home/jjj/code/marvinGrasp
+~~~
 
-Place 期间不会提前使用旧感知结果；下一次抓取必须使用松夹爪后的最新检测结果。
+验证：
 
-抓取失败时由 `home.py` 和 `flowpose_request_ik_app.py` 协同处理：停止旧轨迹、释放夹爪、根据实测姿态恢复，再决定是否重新感知和重抓。
+~~~bash
+cd /home/jjj/code/marvinGrasp
+python -c "import torch; import pointnet2_cuda; print('PointNet2 CUDA OK')"
+~~~
 
-## 并发边界
+### 5. 安装 SAM3
 
-```text
-inference_executor  → SAM3、FlowPose、目标处理
-action_executor     → 机械臂轨迹、抓取、Place、HOME
-gripper_executor    → 夹爪TCP命令
-```
+environment-flowpose.yml 已包含仓库内的 SAM3 editable 安装。手工安装时执行：
 
-同一个 IK 发布器不能被多个动作并发驱动，因此机械臂动作始终通过 `action_executor` 串行执行。感知可以异步运行，但只有在动作状态允许时才能触发抓取。
+~~~bash
+python -m pip install -e perception/sam3
+python -c "import sam3; print(sam3.__file__)"
+~~~
 
-## 输出和调试
+### 6. 准备模型
 
-当前主应用默认不保存图像文件；SAM3 和 FlowPose 可视化主要保留在内存中用于界面显示。`target_order.py` 仍支持通过 `output_dir` 保存 OBB 图，外部调用时可以显式开启。
+模型目录：
 
-重要调试信息包括：
+~~~text
+perception/models/
+├── FlowNet3.pth
+├── ScaleNet3.pth
+├── sam3.pt
+├── facebookresearch_dinov2_main/
+└── dinov2_vits14_pretrain.pth
+~~~
 
-- 当前目标名称和 base_link 坐标
-- 体积过滤结果
-- 抓取模板是否命中
-- 起始姿态来源
-- pregrasp/grasp轨迹状态
-- 夹爪位置、电流和失败原因
-- Place和掉落恢复状态
+仓库中已有 FlowNet3、ScaleNet3 和 sam3 时，检查：
 
-## 扩展规则
+~~~bash
+test -s perception/models/FlowNet3.pth
+test -s perception/models/ScaleNet3.pth
+test -s perception/models/sam3.pt
+~~~
 
-- 新增感知模型：放入 `grasp_core/perception/`
-- 新增物体排序或过滤规则：放入 `planning/grasp/target_order.py`
-- 新增抓取姿态策略：放入 `planning/grasp/policies/`
-- 新增模板处理：放入 `planning/grasp/planner.py`
-- 新增轨迹算法：放入 `planning/trajectory/`
-- 新增抓取、Place或HOME动作：放入 `execution/skills/`
-- 新增 ROS2、IK或夹爪接口：放入 `communication/`
-- 新增通用数学和数据结构：放入 `core/`
+准备 DINOv2：
 
-同一功能只保留一个真实实现。其他层通过公开接口调用，避免重复的姿态计算、配置处理和硬件控制逻辑。
+~~~bash
+cd perception/models
+git clone https://github.com/facebookresearch/dinov2.git facebookresearch_dinov2_main
+wget -O dinov2_vits14_pretrain.pth https://dl.fbaipublicfiles.com/dinov2/dinov2_vits14_pretrain.pth
+cd ../..
+~~~
+
+DINOv2 源码和 checkpoint 都必须存在，否则 FlowPose 可能使用未训练的特征提取器。
+
+### 7. 验证安装
+
+~~~bash
+conda activate flowpose
+cd /home/jjj/code/marvinGrasp
+
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+python -c "import cv2, scipy, open3d, pyrealsense2, webdataset, timm; print('Python dependencies OK')"
+python -c "import sam3; print('SAM3 OK')"
+python -c "import torch; import pointnet2_cuda; print('PointNet2 CUDA OK')"
+rs-enumerate-devices
+~~~
+
+GPU 推理前，torch.cuda.is_available() 必须为 True。
+
+### 8. 安装夹爪 SDK
+
+完整机器人应用还需要夹爪 gRPC SDK：
+
+~~~bash
+conda activate flowpose
+cd /home/jjj/code/marvinGrasp
+
+python -m pip install -r daimon_gripper/dm_gripper_py/requirement.txt
+python -m pip install -e daimon_gripper/dm_gripper_py
+~~~
+
+验证 ROS2 Python 接口：
+
+~~~bash
+source /opt/ros/humble/setup.bash
+python -c "import rclpy; from geometry_msgs.msg import PoseStamped; print('ROS2 Python OK')"
+~~~
+
+## 使用
+
+### 启动完整应用
+
+启动前确认：
+
+- ROS2 Humble 已 source
+- request_ik 节点已启动
+- RealSense 已连接
+- 模型文件已准备
+- 相机序列号和相机外参正确
+- 机器人 URDF、TCP、HOME 和夹爪参数正确
+
+启动：
+
+~~~bash
+source /opt/ros/humble/setup.bash
+conda activate flowpose
+cd /home/jjj/code/marvinGrasp
+
+python flowpose_request_ik_tester.py \
+  --serial CAMERA_SERIAL \
+  --sam3-root /home/jjj/code/marvinGrasp/perception/sam3 \
+  --sam3-checkpoint-path /home/jjj/code/marvinGrasp/perception/models/sam3.pt \
+  --flow-model-path /home/jjj/code/marvinGrasp/perception/models/FlowNet3.pth \
+  --scale-model-path /home/jjj/code/marvinGrasp/perception/models/ScaleNet3.pth \
+  --dino-repo-path /home/jjj/code/marvinGrasp/perception/models/facebookresearch_dinov2_main \
+  --dino-ckpt-path /home/jjj/code/marvinGrasp/perception/models/dinov2_vits14_pretrain.pth \
+  --flowpose-device cuda
+~~~
+
+将 CAMERA_SERIAL 替换成 rs-enumerate-devices 查询到的真实序列号。
+
+### 界面按键
+
+| 按键 | 操作 |
+|---|---|
+| A | 自动执行采集、SAM3、FlowPose 和抓取 |
+| Z | 执行 SAM3 + FlowPose 感知流程 |
+| B | 对最近一次 SAM3 结果执行 FlowPose |
+| C | 发布当前目标 |
+| S | 暂停或停止当前动作 |
+| H | 左右机械臂回 HOME |
+| L | 夹爪闭合 |
+| P | 夹爪释放 |
+| Q / Esc | 退出程序 |
+
+默认情况下，A 执行完整自动流程。手动分步操作时增加：
+
+~~~bash
+--auto-pipeline-on-a FALSE
+~~~
+
+此时使用 Z、B、C 分步执行感知和目标发布。
+
+### 常用参数
+
+~~~bash
+--prompts "pen, screwdriver, toy"
+--sam3-device cuda
+--flowpose-device cuda
+--score-threshold 0.1
+--no-sam3-roi-filter
+--target-order-max-volume-m3 0.0005
+~~~
+
+查看全部参数：
+
+~~~bash
+python flowpose_request_ik_tester.py --help
+~~~
+
+### 旧版 FlowPose 脚本
+
+旧版脚本可能依赖 YOLO 和 results/ckpts/ 下的旧模型，不建议作为当前主流程入口：
+
+~~~bash
+conda activate flowpose
+cd perception/flowpose
+
+PYTHONPATH=. python py_runners/infer_rs.py \
+  --tracking \
+  --realsense \
+  --pretrained_flow_model_path ../../models/FlowNet3.pth \
+  --pretrained_scale_model_path ../../models/ScaleNet3.pth \
+  --device cuda \
+  --data_mode rs
+~~~
+
+## 安全注意事项
+
+首次运行必须确认：
+
+- 机器人工作空间和桌面高度
+- 相机到机器人 base_link 的外参
+- 机器人 HOME / Put 位姿
+- TCP 和抓取方向
+- request_ik topic
+- 夹爪 IP、位置范围和力矩参数
+
+建议先关闭自动抓取和夹爪动作，仅验证相机、SAM3 和 FlowPose 输出；确认位姿坐标和轨迹正确后，再连接真实机器人执行抓取。
