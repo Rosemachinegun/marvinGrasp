@@ -54,23 +54,85 @@ flowchart TD
 
 ~~~text
 marvinGrasp/
-├── flowpose_request_ik_tester.py       主入口
-├── grasp_core/
-│   ├── perception/                     RealSense、SAM3、FlowPose
-│   ├── planning/                       抓取目标和轨迹规划
-│   ├── execution/                      抓取、放置、HOME、恢复
-│   ├── communication/                  ROS2、IK、夹爪通信
-│   ├── core/                           位姿、数学和数据结构
-│   └── config/                         参数和路径配置
-├── perception/
-│   ├── sam3/                           SAM3 源码
-│   ├── flowpose/                       FlowPose 源码和 PointNet2 CUDA 源码
-│   └── models/                         模型权重，默认不上传 Git
-├── daimon_gripper/                     夹爪 SDK 和接收器
-├── environment-flowpose.yml            Conda 环境
-├── env.md                              完整部署和故障排查
-└── README.md                           安装和使用说明
+├── flowpose_request_ik_tester.py           主入口：解析参数并启动完整抓取流程
+├── grasp_core/                             主应用代码
+│   ├── tools/                              启动器、交互 UI、轨迹工具
+│   │   ├── flowpose_request_ik_app.py      完整 FlowPose + request_ik 应用
+│   │   ├── request_ik_ui.py                键盘交互和动作触发
+│   │   └── trajectory_*.py                 轨迹录制、检查和 CSV 工具
+│   ├── perception/                          感知运行时
+│   │   ├── realsense_sam3.py                RealSense 采集和 SAM3 分割
+│   │   ├── flowpose_pipeline.py             FlowPose 推理、位姿和尺寸估计
+│   │   └── perception_runtime.py            感知流程封装和结果输出
+│   ├── planning/                            抓取规划
+│   │   ├── grasp/planner.py                 抓取姿态生成
+│   │   ├── grasp/target_order.py            多目标抓取顺序
+│   │   └── trajectory/                      笛卡尔轨迹、插值和时间规划
+│   ├── execution/                           机器人动作执行
+│   │   ├── skills/grasp.py                  抓取动作
+│   │   ├── skills/place.py                  放置动作
+│   │   ├── skills/home.py                   HOME 动作
+│   │   ├── motion_executor.py               运动执行和轨迹下发
+│   │   ├── drop_monitor.py                  掉落检测
+│   │   └── robot_skill_service.py            动作服务和失败恢复
+│   ├── communication/                       外部设备和 ROS2 通信
+│   │   ├── request_ik_transport.py          request_ik 通信传输
+│   │   ├── request_ik_feedback.py           IK 执行反馈
+│   │   └── gripper_signal.py                夹爪信号通信
+│   ├── core/                                通用数据结构和数学运算
+│   │   ├── types/                           相机、目标和机器人位姿类型
+│   │   ├── math/                            向量、位姿、轴向和轨迹数学
+│   │   └── io/                              目标位姿等数据读写
+│   ├── config/                              参数、路径和 YAML 配置解析
+│   │   ├── defaults.py                      默认参数
+│   │   ├── resource_paths.py                模型和资源路径
+│   │   └── yaml_loader.py                   YAML 配置加载
+│   └── resources/                           机器人工具和 URDF/Xacro 资源
+│       ├── tool.yaml                        工具/夹具参数
+│       └── stand_v3.urf.xacro               机器人描述资源
+├── perception/                              感知模型和算法源码
+│   ├── sam3/                                SAM3 源码，作为普通目录纳入仓库
+│   │   ├── sam3/                            SAM3 Python 包
+│   │   ├── examples/                        SAM3 示例
+│   │   └── pyproject.toml                   SAM3 安装配置
+│   ├── flowpose/                            FlowPose 源码
+│   │   ├── dataset/                         数据集和推理数据加载
+│   │   ├── inference/                       推理辅助函数和 mask 处理
+│   │   ├── py_runners/                      训练、验证和 RealSense 推理入口
+│   │   ├── networks/                        网络结构和 PointNet2 CUDA 算子
+│   │   ├── utils/                           训练、可视化和推理工具
+│   │   └── configuration.yaml               FlowPose 配置
+│   └── models/                              模型权重目录，权重默认不上传 Git
+│       ├── FlowNet3.pth                     FlowNet 权重
+│       ├── ScaleNet3.pth                   尺寸估计权重
+│       ├── sam3.pt                          SAM3 checkpoint
+│       ├── facebookresearch_dinov2_main/    DINOv2 源码
+│       └── dinov2_vits14_pretrain.pth       DINOv2 checkpoint
+├── daimon_gripper/                          夹爪相关代码
+│   ├── dm_gripper_py/                       Lingkong 夹爪 gRPC SDK 源码
+│   │   ├── dm_lingkong_grip_sdk/            SDK Python 包和 protobuf 接口
+│   │   ├── setup.py                          SDK 安装配置
+│   │   └── requirement.txt                   SDK 依赖
+│   ├── dm_gripper_cam_py/                   远程相机 gRPC 客户端
+│   ├── dm_gripper_tac_py/                   触觉夹爪相关代码
+│   ├── grip_signal_receiver.py              夹爪信号接收
+│   └── grip_signal_calibration.py           夹爪信号标定
+├── eye2hand_calibration/                    Eye-to-Hand 外参标定工具
+│   └── calibrate_camera_extrinsic.py        相机外参标定脚本
+├── tests/                                   单元测试和动作流程测试
+├── environment-flowpose.yml                 Conda 环境定义
+├── env.md                                   完整部署、标定和故障排查
+└── README.md                                安装、目录和使用说明
 ~~~
+
+目录使用关系：
+
+- 修改抓取策略时，优先查看 `grasp_core/planning/grasp/` 和 `grasp_core/execution/skills/`。
+- 修改相机、分割或位姿推理时，查看 `grasp_core/perception/`；底层模型算法位于 `perception/`。
+- 修改机器人运动或 `request_ik` 通信时，查看 `grasp_core/communication/`、`grasp_core/execution/` 和 `grasp_core/resources/`。
+- 修改夹爪 SDK 时，查看 `daimon_gripper/dm_gripper_py/`；该目录包含可安装的 Python 源码。
+- 修改模型路径或运行参数时，查看 `grasp_core/config/`，模型权重放在 `perception/models/`。
+- `__pycache__/`、`*.egg-info/`、编译生成文件和模型权重属于运行产物，不是业务源码。
 
 ## 环境要求
 
@@ -190,13 +252,31 @@ perception/models/
 └── dinov2_vits14_pretrain.pth
 ~~~
 
-仓库中已有 FlowNet3、ScaleNet3 和 sam3 时，检查：
+#### 6.1 从 ModelScope 下载模型
+
+项目模型文件统一发布在 [ModelScope：hwkanHW/Marvin_Grasp](https://modelscope.cn/models/hwkanHW/Marvin_Grasp/files)。在项目根目录执行下面的命令，会将该模型仓库中的文件下载到程序默认使用的 `perception/models` 目录：
+
+~~~bash
+conda activate flowpose
+cd /home/jjj/code/marvinGrasp
+
+python -m pip install modelscope
+modelscope download \
+  --model hwkanHW/Marvin_Grasp \
+  --local_dir "$PWD/perception/models"
+~~~
+
+下载后检查模型文件：
 
 ~~~bash
 test -s perception/models/FlowNet3.pth
 test -s perception/models/ScaleNet3.pth
 test -s perception/models/sam3.pt
+test -d perception/models/facebookresearch_dinov2_main
+test -s perception/models/dinov2_vits14_pretrain.pth
 ~~~
+
+模型权重不纳入 Git 仓库，新的机器或全新克隆的工作区都需要重新下载。若 ModelScope 仓库中的文件目录发生变化，请保持最终文件路径与上面的模型目录结构一致。
 
 准备 DINOv2：
 
