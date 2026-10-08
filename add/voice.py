@@ -27,7 +27,7 @@ VOICE_MIN_RMS = float(os.getenv("VOICE_MIN_RMS", "0.001"))
 VOICE_GAIN = float(os.getenv("VOICE_GAIN", "1.0"))
 VOICE_AUTO_GAIN = float(os.getenv("VOICE_AUTO_GAIN", "8.0"))
 VOICE_HOTWORDS = (
-    "Marvin 机械臂 抓取 夹取 笔 钢笔 螺丝刀 把手 黄色方块 方块 U盘 硬盘"
+    "Marvin 机械臂 抓取 夹取 笔 钢笔 螺丝刀 把手 蓝色方块 方块 U盘 硬盘"
 )
 
 
@@ -193,6 +193,10 @@ def parse_voice_target(text: str) -> str | None:
 
     if "螺丝刀" in command or "改锥" in command:
         return "screwdriver_handle"
+    if ("蓝色" in command or "蓝" in command) and any(
+        word in command for word in ("方块", "积木", "立方体")
+    ):
+        return "blue_cube"
     if ("黄色" in command or "黄" in command) and any(
         word in command for word in ("方块", "积木", "立方体")
     ):

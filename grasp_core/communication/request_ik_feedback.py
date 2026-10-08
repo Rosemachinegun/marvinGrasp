@@ -213,10 +213,14 @@ class MeasuredToolPoseReader:
         self.executor.shutdown(timeout_sec=0.0)
         self.node.destroy_node()
 
-    def _spin(self, deadline: float, cancelled) -> None:
+    def _spin(self, deadline: float, cancelled, *, waiting_for=None) -> None:
         if cancelled():
             raise RuntimeError("HOME interrupted by S")
-        if not self.client.ok() or time.monotonic() >= deadline:
+        if not self.client.ok():
+            raise RuntimeError("HOME feedback read stopped: ROS context is shut down")
+        if time.monotonic() >= deadline:
+            if waiting_for is not None:
+                raise RuntimeError(f"HOME model load timed out: {waiting_for}")
             raise RuntimeError(
                 "HOME measured joint feedback/model unavailable or arm not settled"
             )
@@ -228,7 +232,10 @@ class MeasuredToolPoseReader:
 
         if self.params is None:
             while not self.service.service_is_ready():
-                self._spin(deadline, cancelled)
+                self._spin(
+                    deadline, cancelled,
+                    waiting_for="/request_ik_tester/get_parameters service unavailable",
+                )
             request = self.GetParameters.Request()
             request.names = [
                 "scene_file",
@@ -237,17 +244,25 @@ class MeasuredToolPoseReader:
                 "marker_frame_id",
             ]
             future = self.service.call_async(request)
-            while not future.done():
-                self._spin(deadline, cancelled)
-            values = future.result().values
+            try:
+                while not future.done():
+                    self._spin(
+                        deadline, cancelled,
+                        waiting_for="/request_ik_tester/get_parameters did not respond",
+                    )
+                values = future.result().values
+            finally:
+                if not future.done():
+                    future.cancel()
             if len(values) != len(request.names) or any(v.type != 4 for v in values):
                 raise RuntimeError("request_ik_tester model parameters unavailable")
-            self.params = dict(zip(request.names, (v.string_value for v in values)))
-            if self.params["marker_frame_id"] != self.client.frame_id:
+            params = dict(zip(request.names, (v.string_value for v in values)))
+            if params["marker_frame_id"] != self.client.frame_id:
                 raise RuntimeError(
                     "HOME frame differs from request_ik_tester marker_frame_id"
                 )
-            self.scene = resolve_ik_scene(self.params)
+            self.scene = resolve_ik_scene(params)
+            self.params = params
 
         self.fk_by_hand[hand] = MeasuredToolFK(
             self.scene, self.client.frame_id, hand
@@ -262,8 +277,12 @@ class MeasuredToolPoseReader:
         cancelled,
         require_settled: bool,
     ):
-        deadline = time.monotonic() + max(float(timeout_sec), 0.1)
-        fk = self._load_model(hand, deadline, cancelled)
+        # Initial DDS discovery and model loading must not consume the fresh
+        # feedback/settling window. Cached models return immediately.
+        feedback_timeout = max(float(timeout_sec), 0.1)
+        model_deadline = time.monotonic() + max(feedback_timeout, 15.0)
+        fk = self._load_model(hand, model_deadline, cancelled)
+        deadline = time.monotonic() + feedback_timeout
         requested_ns = self.node.get_clock().now().nanoseconds
         settled = SettledFeedback(requested_ns)
         while True:

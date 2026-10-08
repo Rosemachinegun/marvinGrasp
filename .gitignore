@@ -7,3 +7,6 @@ captures/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Local environment activation and installation logs
+.marvin-env/

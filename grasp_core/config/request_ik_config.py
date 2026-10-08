@@ -185,7 +185,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--prompts", default="toy, yellow_screwdriver_handle,pen,rectangular object,ribbon")
+    parser.add_argument("--prompts", default="toy, yellow_screwdriver_handle,pen,rectangular object,blue_cube")
     parser.add_argument(
         "--tablet-ui",
         action=argparse.BooleanOptionalAction,
@@ -218,7 +218,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--voice-record-seconds",
         type=float,
-        default=4.0,
+        default=2.0,
         help="Duration of one voice recording.",
     )
     parser.add_argument(

@@ -178,6 +178,7 @@ class GraspDemoApp:
         self.grasp_future: Future | None = None
         self.place_future: Future | None = None
         self.place_target_count: int | None = None
+        self.place_voice_task = False
         self.manual_home_future: Future | None = None
         self.manual_home_hand: tuple[str, ...] | None = None
         self.auto_home_future: Future | None = None
@@ -473,6 +474,7 @@ class GraspDemoApp:
         self.state.flowpose_overlay = None
         self.state.raw_flowpose_overlay = None
         self.state.base_targets.clear()
+        self.publish_target_visualization([])
 
         # print(self.state)
         self.state.sam_future = self.inference_executor.submit(
@@ -521,8 +523,8 @@ class GraspDemoApp:
             self.state.sam_result,
             self.args,
             self.camera_extrinsic.matrix,
-            False,
-            False,
+            True,  # save_outputs
+            True,  # save_visualization
         )
         # print(self.state)
 
@@ -569,7 +571,34 @@ class GraspDemoApp:
                 self.args,
             )
             if s.flowpose_future.done():
+                self.publish_target_visualization(s.base_targets)
                 s.flowpose_future = None
+
+    def publish_target_visualization(
+        self,
+        targets: list[TargetObjectPose],
+    ) -> None:
+        """Publish the perceived grasp objects to the launch file's RViz."""
+        publish = getattr(
+            getattr(self, "ik_publisher", None),
+            "publish_grasp_target_markers",
+            None,
+        )
+        if not callable(publish):
+            return
+        try:
+            publish(
+                list(targets),
+                selected_index=int(getattr(self.args, "ik_target_index", 0)),
+            )
+            if targets:
+                print(
+                    "[rviz] published "
+                    f"{len(targets)} grasp target(s) on /flowpose/grasp_targets",
+                    flush=True,
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[rviz] failed to publish grasp targets: {exc}", flush=True)
 
     def publish_grasp(self, *, retry: bool = False) -> None:
         """Send the latest target to IK and start recovery on grip failure."""
@@ -739,7 +768,13 @@ class GraspDemoApp:
         if self.robot_actions is None:
             self.state.status = "Robot action service unavailable"
             return
-        self.place_target_count = len(self.state.base_targets)
+        self.place_voice_task = self.voice_input.task_active
+        # A voice command owns one pick/place cycle, even when perception
+        # finds several matching objects. A count of one makes Place return
+        # the executing hand HOME instead of parking for the next target.
+        self.place_target_count = (
+            1 if self.place_voice_task else len(self.state.base_targets)
+        )
         hand = self.state.grasp_confirmed_hand
         object_label = self.state.grasp_confirmed_label
         grasp_confirmed = self.state.grasp_confirmed
@@ -764,22 +799,29 @@ class GraspDemoApp:
             print(f"[place] {self.state.status}", flush=True)
             self.place_future = None
             self.place_target_count = None
+            self.place_voice_task = False
             return
         target_count = self.place_target_count
+        voice_task = self.place_voice_task
         self.place_future = None
         self.place_target_count = None
+        self.place_voice_task = False
         self.state.status = result.status
         if "GRASP_DROPPED" in result.status:
             self.start_drop_recovery(result.status, result.grasp_hand)
         elif result.ok:
-            # Voice selection is one-shot: it applies to this grasp/place cycle
-            # only. The next post-place perception uses the normal prompts.
             self.voice_input.finish_task()
             if target_count is not None and target_count > 1:
                 self.state.parked_after_place_hand = result.grasp_hand
             self.state.grasp_confirmed = False
             self.state.grasp_confirmed_hand = None
             self.state.grasp_confirmed_label = None
+            if voice_task:
+                self.state.continuous_grasp_pending = False
+                self.state.parked_after_place_hand = None
+                # The Place future includes release and the return HOME.
+                # Preserve its status and wait for a new operator command.
+                return
             # Place performs the gripper release before its future completes.
             # Start perception now so it reads the newest post-release frame.
             self.restart_grasp_pipeline_after_place()

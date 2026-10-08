@@ -170,6 +170,18 @@ class RequestIkTargetPublisher:
             publish_rate_hz=self.publish_rate_hz,
         )
 
+    def publish_grasp_target_markers(
+        self,
+        targets,
+        *,
+        selected_index: int = 0,
+    ) -> None:
+        """Publish perception targets without sending them to the IK controller."""
+        self.client.publish_grasp_target_markers(
+            targets,
+            selected_index=selected_index,
+        )
+
     def publish_smooth_path(
         self,
         hand: str,

@@ -2,6 +2,53 @@
 
 marvinGrasp 是一个基于 RealSense、SAM3、FlowPose、ROS2 和 request_ik 的机器人抓取系统。代码按“感知、目标排序、抓取规划、动作执行、底层通信”分层组织。
 
+## 一键配置环境
+
+适用于 **Ubuntu 22.04 x86_64 + 已安装可用 NVIDIA 驱动**。在项目根目录运行：
+
+```bash
+bash setup_env.sh
+source .marvin-env/activate.sh
+```
+
+首次安装需要联网和 sudo 权限（可能提示输入系统密码），CUDA / PyTorch 下载较大。
+脚本自动安装系统依赖、ROS2 Humble 和缺失的 RealSense USB 权限规则（首次需重新插拔相机）；没有 Conda 时安装 Miniforge；默认创建独立的
+`marvin-grasp` 环境，安装 `environment-flowpose.yml` 中的依赖及本地 SAM3 / 夹爪 SDK，
+编译 PointNet2，并验证 Python 导入和实际 CUDA 运算。重跑会更新同名环境；不会自动启动机器人。
+新终端使用上面的 `source` 命令即可激活，不需要手动拼接 ROS / Conda 配置。
+
+常用选项：
+
+```bash
+# 接入已经编译好的机器人控制工作空间
+bash setup_env.sh --robot-setup ~/robot_ws/install/setup.bash
+
+# 系统依赖和 ROS 已就绪时跳过 apt
+bash setup_env.sh --skip-system
+
+# 只检查，不安装；自定义环境名时，安装和检查都传同一个名字
+bash setup_env.sh --check
+bash setup_env.sh --env-name my-grasp
+bash setup_env.sh --help
+```
+
+安装日志和激活脚本位于 `.marvin-env/`（不提交 Git）。默认环境名与历史 YAML 中的
+`flowpose` 不同，以避免修改原有运行环境；可通过 `--env-name flowpose` 显式更新旧环境。
+YAML 面向主抓取应用，触觉 SDK 安装基础依赖；可选 TensorRT / CuPy 后端及其他实验、训练脚本的
+依赖按对应子项目说明安装。
+
+模型权重不在 Git 中：请将 `sam3.pt`、`FlowNet3.pth`、`ScaleNet3.pth`、
+`dinov2_vits14_pretrain.pth` 及 DINOv2 源码目录放到 `perception/models/`，
+或用应用参数指定已有路径。脚本会报告缺失模型，但软件检查通过不代表实机已就绪。
+机器人控制工作空间、RealSense USB 权限、IP、手眼标定、夹爪标定及 HOME / PUT 等参数
+仍需按 [部署指南](env.md) 准备。确认完成后再运行：
+
+```bash
+python flowpose_request_ik_tester.py
+```
+
+ROS 软件源配置采用 [ROS2 官方安装流程](https://github.com/ros2/ros2_documentation/blob/humble/source/Installation/_Apt-Repositories.rst)。
+
 ## 目录结构
 
 ```text

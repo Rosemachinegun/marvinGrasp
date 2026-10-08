@@ -1,9 +1,10 @@
 name: flowpose
 channels:
+  - nvidia/label/cuda-12.1.1
   - pytorch
   - nvidia
   - conda-forge
-  - defaults
+  - nodefaults
 dependencies:
   - python=3.10.13
   - pip
@@ -11,6 +12,7 @@ dependencies:
   - torchvision=0.20.1
   - torchaudio=2.5.1
   - pytorch-cuda=12.1
+  - cuda-toolkit=12.1.1
   - portaudio
   - numpy=1.26.3
   - scipy=1.12.0
@@ -19,7 +21,7 @@ dependencies:
   - tqdm
   - scikit-learn
   - pip:
-      - opencv-python==4.9.0.80
+      - setuptools<81
       - opencv-contrib-python==4.10.0.84
       - pyrealsense2==2.55.1.6486
       - open3d==0.18.0
@@ -33,6 +35,11 @@ dependencies:
       - iopath==0.1.10
       - typing_extensions
       - huggingface_hub
+      - PyYAML
+      - einops
+      - pycocotools
+      - psutil
+      - gradio>=5,<6
       - faster-whisper
       - sounddevice
       - grpcio==1.83.1
@@ -49,3 +56,5 @@ dependencies:
       - pyquaternion==0.9.9
       - pynput==1.8.1
       - -e ./perception/sam3
+      - -e ./daimon_gripper/dm_gripper_py
+      - -e ./daimon_gripper/dm_gripper_tac_py
