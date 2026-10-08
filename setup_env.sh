@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 # Ubuntu 22.04 + NVIDIA GPU; never launches the robot application.
+# 一键安装环境
+# bash setup_env.sh
+
+# 安装成功后激活，每次新开终端执行
+# source .marvin-env/activate.sh
+
+# 检查环境
+# bash setup_env.sh --check
+
+
 set -Eeuo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ENV_NAME=marvin-grasp
