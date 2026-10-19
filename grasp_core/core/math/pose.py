@@ -451,7 +451,7 @@ def approach_direction(
 def select_ik_hand(position_xyz: np.ndarray, hand_mode: str) -> str:
     if hand_mode in {"left", "right"}:
         return hand_mode
-    return "left" if float(position_xyz[1]) > -0.1 else "right"
+    return "left" if float(position_xyz[1]) > -0.0 else "right"
 
 
 def normalize_quaternion(

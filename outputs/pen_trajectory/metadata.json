@@ -1,0 +1,47 @@
+{
+  "object_xyz_m": [
+    0.385,
+    -0.154,
+    0.67
+  ],
+  "start_xyz_m": [
+    0.25,
+    -0.25,
+    0.83
+  ],
+  "pregrasp_xyz_m": [
+    0.385,
+    -0.154,
+    0.77
+  ],
+  "grasp_xyz_m": [
+    0.385,
+    -0.154,
+    0.7000000000000001
+  ],
+  "start_quaternion_xyzw": [
+    -0.0003030730901686428,
+    0.17364791318569836,
+    0.0017188129062887826,
+    0.9848062530646053
+  ],
+  "hand": "right",
+  "sample_count": 353,
+  "segment_steps": [
+    254,
+    99
+  ],
+  "path_length_m": 0.24731145162399548,
+  "max_sample_step_m": 0.0007175980639972569,
+  "effective_step_limits": [
+    0.0010666666666666667,
+    0.4666666666666667
+  ],
+  "assumptions": [
+    "Base-frame coordinates; object z=0.670 is already the planning input.",
+    "Start at configured right Home pose, not measured hardware feedback.",
+    "Horizontal pen long axis along base +X; illustrative size 0.14 x 0.012 x 0.012 m.",
+    "Planning samples only; no IK, collision checking or hardware execution performed.",
+    "Normalized sample index is not measured time; no post-grasp lift in this grasp routine."
+  ]
+}

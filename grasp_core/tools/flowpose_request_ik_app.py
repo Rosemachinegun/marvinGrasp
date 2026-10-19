@@ -12,6 +12,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import cv2
@@ -179,6 +180,9 @@ class GraspDemoApp:
         self.place_future: Future | None = None
         self.place_target_count: int | None = None
         self.place_voice_task = False
+        self.place_handover_task = False
+        self.handover_ready = Event()
+        self.handover_release_requested = Event()
         self.manual_home_future: Future | None = None
         self.manual_home_hand: tuple[str, ...] | None = None
         self.auto_home_future: Future | None = None
@@ -769,6 +773,16 @@ class GraspDemoApp:
             self.state.status = "Robot action service unavailable"
             return
         self.place_voice_task = self.voice_input.task_active
+        self.place_handover_task = (
+            self.place_voice_task
+            and bool(getattr(self.voice_input, "active_handover", False))
+        )
+        if not hasattr(self, "handover_ready"):
+            self.handover_ready = Event()
+        if not hasattr(self, "handover_release_requested"):
+            self.handover_release_requested = Event()
+        self.handover_ready.clear()
+        self.handover_release_requested.clear()
         # A voice command owns one pick/place cycle, even when perception
         # finds several matching objects. A count of one makes Place return
         # the executing hand HOME instead of parking for the next target.
@@ -779,14 +793,25 @@ class GraspDemoApp:
         object_label = self.state.grasp_confirmed_label
         grasp_confirmed = self.state.grasp_confirmed
 
-        self.place_future = self.action_executor.submit(
-            self.robot_actions.publish_place,
-            grasp_confirmed=grasp_confirmed,
-            hand=hand,
-            object_label=object_label,
-            target_count=self.place_target_count,
-        )
-        self.state.status = "Place action running"
+        if self.place_handover_task:
+            self.place_future = self.action_executor.submit(
+                self.robot_actions.publish_handover,
+                grasp_confirmed=grasp_confirmed,
+                hand=hand,
+                object_label=object_label,
+                release_requested=self.handover_release_requested,
+                ready_event=self.handover_ready,
+            )
+            self.state.status = "Handover action running"
+        else:
+            self.place_future = self.action_executor.submit(
+                self.robot_actions.publish_place,
+                grasp_confirmed=grasp_confirmed,
+                hand=hand,
+                object_label=object_label,
+                target_count=self.place_target_count,
+            )
+            self.state.status = "Place action running"
 
     def collect_place_result(self) -> None:
         """Consume the asynchronous Place result and advance the workflow."""
@@ -800,17 +825,32 @@ class GraspDemoApp:
             self.place_future = None
             self.place_target_count = None
             self.place_voice_task = False
+            self.place_handover_task = False
+            self.handover_ready.clear()
+            self.handover_release_requested.clear()
             return
         target_count = self.place_target_count
         voice_task = self.place_voice_task
+        handover_task = self.place_handover_task
         self.place_future = None
         self.place_target_count = None
         self.place_voice_task = False
+        self.place_handover_task = False
+        self.handover_ready.clear()
+        self.handover_release_requested.clear()
         self.state.status = result.status
         if "GRASP_DROPPED" in result.status:
             self.start_drop_recovery(result.status, result.grasp_hand)
         elif result.ok:
             self.voice_input.finish_task()
+            if handover_task:
+                # The handover future includes B-confirmed release and HOME.
+                self.state.grasp_confirmed = False
+                self.state.grasp_confirmed_hand = None
+                self.state.grasp_confirmed_label = None
+                self.state.continuous_grasp_pending = False
+                self.state.parked_after_place_hand = None
+                return
             if target_count is not None and target_count > 1:
                 self.state.parked_after_place_hand = result.grasp_hand
             self.state.grasp_confirmed = False
@@ -825,6 +865,15 @@ class GraspDemoApp:
             # Place performs the gripper release before its future completes.
             # Start perception now so it reads the newest post-release frame.
             self.restart_grasp_pipeline_after_place()
+
+    def update_handover_status(self) -> None:
+        """Expose the guarded B-key release state on the live dashboard."""
+        if (
+            self.place_handover_task
+            and self.handover_ready.is_set()
+            and not self.handover_release_requested.is_set()
+        ):
+            self.state.status = "Handover ready: press B to release and return HOME"
 
     def publish_place(self) -> None:
         """Backward-compatible entry point for scheduling Place."""
@@ -1354,7 +1403,7 @@ class GraspDemoApp:
         self.state.status = parsed.status
         if parsed.target is None or self.state.paused:
             return
-        self.voice_input.activate(parsed.target)
+        self.voice_input.activate(parsed.target, handover=parsed.handover)
         self.start_pipeline(grasp_on_done=True)
 
     def publish_tablet_state(self, bundle) -> None:
@@ -1442,6 +1491,19 @@ class GraspDemoApp:
         if self.state.paused or is_pending(self.manual_home_future):
             return True
 
+        # B keeps its existing manual-FlowPose behavior outside handover. It
+        # becomes a guarded release confirmation only after the hand has
+        # actually reached HANDOVER_XYZ; an early B press is ignored.
+        if key == KEY_FLOWPOSE and bool(
+            getattr(self, "place_handover_task", False)
+        ):
+            if self.handover_ready.is_set():
+                self.handover_release_requested.set()
+                self.state.status = "Handover release confirmed by B"
+            else:
+                self.state.status = "Handover not ready: B release ignored"
+            return True
+
         if key == KEY_CAPTURE:
             if self.auto_pipeline_on_a():
                 self.start_pipeline(grasp_on_done=True)
@@ -1495,6 +1557,7 @@ class GraspDemoApp:
                 self.advance_pipeline()
             self.collect_grasp_result()
             self.collect_place_result()
+            self.update_handover_status()
             self.collect_auto_home_result()
             self.collect_manual_home_result()
             self._collect_gripper_result()

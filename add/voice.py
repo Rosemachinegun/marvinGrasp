@@ -2,7 +2,7 @@
 """Voice-command boundary for the grasp demo.
 
 This module owns the V-key recording lifecycle, STT worker thread, thread-safe
-queue, Chinese target parsing, active one-shot target, and dynamic SAM3 prompt
+queue, bilingual target parsing, active one-shot target, and dynamic SAM3 prompt
 selection. It never calls perception, IK, the robot, or the gripper.
 
 The optional microphone/STT dependencies are imported lazily so the rest of
@@ -26,9 +26,43 @@ VOICE_SAMPLE_RATE = 16_000
 VOICE_MIN_RMS = float(os.getenv("VOICE_MIN_RMS", "0.001"))
 VOICE_GAIN = float(os.getenv("VOICE_GAIN", "1.0"))
 VOICE_AUTO_GAIN = float(os.getenv("VOICE_AUTO_GAIN", "8.0"))
-VOICE_HOTWORDS = (
-    "Marvin 机械臂 抓取 夹取 笔 钢笔 螺丝刀 把手 蓝色方块 方块 U盘 硬盘"
-)
+VOICE_LANGUAGE = os.getenv("VOICE_LANGUAGE", "en")
+VOICE_HOTWORDS = {
+    "en": (
+        "Marvin give me pick up grab hand me pencil case pencil box "
+        "box black box screwdriver handle pen toy"
+    ),
+    "zh": (
+        "Marvin 机械臂 抓取 夹取 递给我 笔 钢笔 螺丝刀 把手 "
+        "蓝色方块 黄色方块 方块 U盘 硬盘"
+    ),
+}
+
+
+def normalize_voice_language(language: str) -> str:
+    """Return the Whisper language code accepted by this command parser."""
+    normalized = str(language).strip().lower().replace("_", "-")
+    aliases = {
+        "en": "en",
+        "eng": "en",
+        "english": "en",
+        "en-us": "en",
+        "en-gb": "en",
+        "zh": "zh",
+        "zho": "zh",
+        "chi": "zh",
+        "chinese": "zh",
+        "zh-cn": "zh",
+    }
+    try:
+        return aliases[normalized]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported voice language: {language!r}") from exc
+
+
+def voice_hotwords(language: str) -> str:
+    """Return language-specific vocabulary hints for Faster-Whisper."""
+    return VOICE_HOTWORDS[normalize_voice_language(language)]
 
 
 class SpeechResult(Protocol):
@@ -56,14 +90,22 @@ class VoiceToText:
     ``FASTER_WHISPER_DEVICE`` (``cuda`` or ``cpu``; default: auto)
     ``FASTER_WHISPER_COMPUTE_TYPE`` (default: auto)
     ``VOICE_INPUT_DEVICE`` (optional sounddevice input-device index/name)
+    ``VOICE_LANGUAGE`` (``en`` or ``zh``; default: ``en``)
     """
 
-    def __init__(self) -> None:
+    def __init__(self, language: str = VOICE_LANGUAGE) -> None:
         self.model_name = os.getenv("FASTER_WHISPER_MODEL", "small")
         self.device = os.getenv("FASTER_WHISPER_DEVICE", "auto")
         self.compute_type = os.getenv("FASTER_WHISPER_COMPUTE_TYPE", "auto")
         self.input_device = os.getenv("VOICE_INPUT_DEVICE")
+        self.language = normalize_voice_language(language)
         self._model = None
+
+    def switch_language(self, language: str) -> str:
+        """Switch recognition language without reloading the multilingual model."""
+        self.language = normalize_voice_language(language)
+        print(f"[voice] recognition language={self.language}", flush=True)
+        return self.language
 
     def _load_model(self):
         from faster_whisper import WhisperModel
@@ -149,11 +191,11 @@ class VoiceToText:
         model = self._model or self._load_model()
         segments, _info = model.transcribe(
             audio,
-            language="zh",
+            language=self.language,
             beam_size=5,
             condition_on_previous_text=False,
             vad_filter=True,
-            hotwords=VOICE_HOTWORDS,
+            hotwords=voice_hotwords(self.language),
         )
         text = "".join(segment.text for segment in segments).strip()
         if not text:
@@ -161,11 +203,11 @@ class VoiceToText:
             # Retry once without VAD; this is still bounded to one recording.
             segments, _info = model.transcribe(
                 audio,
-                language="zh",
+                language=self.language,
                 beam_size=5,
                 condition_on_previous_text=False,
                 vad_filter=False,
-                hotwords=VOICE_HOTWORDS,
+                hotwords=voice_hotwords(self.language),
             )
             text = "".join(segment.text for segment in segments).strip()
         print(f"[voice] recognized: {text or '<no speech>'}", flush=True)
@@ -179,19 +221,42 @@ class ParsedVoiceCommand:
     text: str
     target: str | None
     status: str
+    handover: bool = False
+
+
+def requests_handover(text: str) -> bool:
+    """Return whether a transcript explicitly asks for a handover."""
+    command = re.sub(r"[\s，。！？、,!.?]", "", text).lower()
+    return "递给我" in command or any(
+        phrase in command for phrase in ("giveme", "handme", "bringme")
+    )
 
 
 def parse_voice_target(text: str) -> str | None:
-    """Map a short Chinese grasp instruction to a canonical object label."""
+    """Map a short English or Chinese grasp instruction to an object label."""
     command = re.sub(r"[\s，。！？、,!.?]", "", text).lower()
     if (
         not command
-        or any(word in command for word in ("不要", "别", "取消", "停止"))
-        or not any(verb in command for verb in ("夹", "抓", "拿", "取"))
+        or any(
+            word in command
+            for word in ("不要", "别", "取消", "停止", "don't", "dont", "cancel", "stop")
+        )
+        or not any(
+            verb in command
+            for verb in (
+                "夹", "抓", "拿", "取", "递给我",
+                "give", "hand", "bring", "pick", "grab", "take",
+            )
+        )
     ):
         return None
 
+    # Check box phrases before "pen": "pencil case" contains "pen".
+    if any(name in command for name in ("pencilcase", "pencilbox", "blackbox", "box")):
+        return "black_box"
     if "螺丝刀" in command or "改锥" in command:
+        return "screwdriver_handle"
+    if "screwdriver" in command:
         return "screwdriver_handle"
     if ("蓝色" in command or "蓝" in command) and any(
         word in command for word in ("方块", "积木", "立方体")
@@ -201,9 +266,9 @@ def parse_voice_target(text: str) -> str | None:
         word in command for word in ("方块", "积木", "立方体")
     ):
         return "yellow_cube"
-    if "笔" in command:
+    if "笔" in command or any(name in command for name in ("pen", "pencil")):
         return "pen"
-    if "玩具" in command:
+    if "玩具" in command or "toy" in command:
         return "toy"
     return None
 
@@ -234,10 +299,12 @@ class VoiceGraspInput:
         *,
         enabled: bool = VOICE_ENABLED,
         record_seconds: float = VOICE_RECORD_SECONDS,
+        language: str = VOICE_LANGUAGE,
         recognizer_factory: Callable[[], SpeechRecognizer] | None = None,
     ) -> None:
         self.enabled = bool(enabled)
         self.record_seconds = float(record_seconds)
+        self.language = normalize_voice_language(language)
         self._recognizer_factory = recognizer_factory
         self._recognizer: SpeechRecognizer | None = None
         self._queue: Queue[str] = Queue(maxsize=1)
@@ -245,6 +312,7 @@ class VoiceGraspInput:
         self._cancelled = Event()
         self._thread: Thread | None = None
         self.active_target: str | None = None
+        self.active_handover = False
 
     @property
     def recognition_running(self) -> bool:
@@ -279,7 +347,16 @@ class VoiceGraspInput:
     def _build_recognizer(self) -> SpeechRecognizer:
         if self._recognizer_factory is not None:
             return self._recognizer_factory()
-        return VoiceToText()
+        return VoiceToText(language=self.language)
+
+    def switch_language(self, language: str) -> str:
+        """Switch future STT calls between English and Chinese."""
+        self.language = normalize_voice_language(language)
+        if self._recognizer is not None:
+            switch = getattr(self._recognizer, "switch_language", None)
+            if callable(switch):
+                switch(self.language)
+        return self.language
 
     def _recognize_once(self) -> None:
         """Run only microphone/STT work and enqueue its text result."""
@@ -321,6 +398,7 @@ class VoiceGraspInput:
         if not text:
             return ParsedVoiceCommand(text="", target=None, status="Voice: no speech detected")
         target = parse_voice_target(text)
+        handover = requests_handover(text)
         if target is None:
             return ParsedVoiceCommand(
                 text=text,
@@ -330,14 +408,21 @@ class VoiceGraspInput:
         return ParsedVoiceCommand(
             text=text,
             target=target,
-            status=f"Voice target recognized: {target}",
+            status=(
+                f"Voice target recognized: {target} (handover)"
+                if handover
+                else f"Voice target recognized: {target}"
+            ),
+            handover=handover,
         )
 
-    def activate(self, target: str) -> None:
+    def activate(self, target: str, *, handover: bool = False) -> None:
         self.active_target = str(target)
+        self.active_handover = bool(handover)
 
     def finish_task(self) -> None:
         self.active_target = None
+        self.active_handover = False
 
     def sam_prompt(
         self,

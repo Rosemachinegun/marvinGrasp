@@ -21,7 +21,7 @@ GRIP_MIN_LIMIT_TOKENS = ("GRASP_FAILED_MIN_LIMIT", "GRIP_FAILED_MIN_LIMIT")
 class GraspConfig:
     grip_min_limit_tokens: tuple[str, ...] = GRIP_MIN_LIMIT_TOKENS
     force_object_z: bool = True
-    forced_object_z_m: float = 0.675
+    forced_object_z_m: float = 0.67
     pregrasp_distance_m: float = 0.3
     ik_target_stage: str = "pregrasp"
     approach_axis: str = "z"
@@ -41,7 +41,7 @@ class GraspConfig:
     target_trajectory_step_m: float = 0.01
     target_trajectory_step_deg: float = 1.0
     target_trajectory_min_steps: int = 15
-    target_trajectory_speed_mps: float = 0.07  #机械臂抓取速度
+    target_trajectory_speed_mps: float = 0.08  #机械臂抓取速度
     target_trajectory_angular_speed_dps: float = 35.0  #旋转速度
     final_approach_samples: int = 12
     final_approach_slowdown_ratio: float = 0.03  #接近目标减速

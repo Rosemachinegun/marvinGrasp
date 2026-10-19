@@ -6,6 +6,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RESOURCES_ROOT = PROJECT_ROOT / "grasp_core" / "resources"
 DEFAULT_TOOL_TEMPLATE_PATH = RESOURCES_ROOT / "tool.yaml"
 DEFAULT_ROBOT_XACRO_PATH = RESOURCES_ROOT / "stand_v3.urf.xacro"
-DEFAULT_SAM3_ROI_XYXY = (55,58,347,215)
+DEFAULT_SAM3_ROI_XYXY = (172,22,635,307)
 DEFAULT_TRAJECTORY_PLOT_DIR = PROJECT_ROOT / "captures" / "request_ik_trajectories"
 DEFAULT_JOINT_TRAJECTORY_CSV_DIR = PROJECT_ROOT / "captures" / "request_ik_joint_trajectories"

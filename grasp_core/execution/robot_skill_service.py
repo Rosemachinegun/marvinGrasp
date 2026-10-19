@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from threading import Event
 
 from grasp_core.execution.skills.grasp import GraspSkill, execute_grasp
 from grasp_core.planning.grasp.policies.ribbon import (
@@ -14,6 +15,7 @@ from grasp_core.execution.skills.place import (
     PlaceSkill,
     execute_fixed_place_after_grasp,
 )
+from grasp_core.execution.skills.handover import execute_handover_after_grasp
 from grasp_core.execution.drop_monitor import GraspDropMonitor, read_grasp_baseline
 from grasp_core.communication.gripper_signal import send_gripper_signal
 from grasp_core.core.math.pose import PickTemplateWaypoint
@@ -133,6 +135,34 @@ class RobotActionService:
             grasp_hand=place_hand,
             object_label=object_label,
             ok=result.ok and not (monitor is not None and monitor.dropped),
+        )
+
+    def publish_handover(
+        self,
+        *,
+        grasp_confirmed: bool,
+        hand: str | None,
+        object_label: str | None = None,
+        release_requested: Event,
+        ready_event: Event,
+    ) -> RobotActionResult:
+        """Wait for confirmed handover release, then return HOME."""
+        handover_hand = hand or ("left" if self.args.ik_hand == "left" else "right")
+        result = execute_handover_after_grasp(
+            self.ik_publisher,
+            handover_hand,
+            self.args,
+            grasp_confirmed=grasp_confirmed,
+            release_requested=release_requested,
+            ready_event=ready_event,
+        )
+        return RobotActionResult(
+            status=result.status,
+            # A successful handover includes opening the gripper and HOME.
+            grasp_confirmed=False if result.ok else grasp_confirmed,
+            grasp_hand=handover_hand,
+            object_label=object_label,
+            ok=result.ok,
         )
 
     def publish_home(

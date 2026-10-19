@@ -1,5 +1,6 @@
 from queue import SimpleQueue
 from concurrent.futures import Future
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -7,7 +8,12 @@ import pytest
 
 import add.web as web_module
 from add.settings import VOICE_ENABLED, WEB_ENABLED
-from add.voice import VoiceGraspInput
+from add.voice import (
+    VoiceGraspInput,
+    VoiceToText,
+    parse_voice_target,
+    requests_handover,
+)
 from add.web import (
     TabletCommand,
     TabletTaskLoopBridge,
@@ -71,6 +77,113 @@ def test_web_and_voice_are_enabled_by_default() -> None:
     assert WEB_ENABLED is True
     assert VOICE_ENABLED is True
     assert VoiceGraspInput().enabled is True
+
+
+def test_voice_handover_phrase_is_preserved_as_active_intent() -> None:
+    voice = VoiceGraspInput()
+    assert requests_handover("把钢笔递给我") is True
+    assert voice.submit_transcript("把钢笔递给我") is True
+
+    parsed = voice.poll()
+
+    assert parsed is not None
+    assert parsed.target == "pen"
+    assert parsed.handover is True
+    voice.activate(parsed.target, handover=parsed.handover)
+    assert voice.active_handover is True
+    voice.finish_task()
+    assert voice.active_handover is False
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    (
+        "give me the pencil case",
+        "give me the box",
+        "give me the black box",
+    ),
+)
+def test_english_box_phrases_request_black_box_handover(phrase: str) -> None:
+    voice = VoiceGraspInput(language="en")
+    assert requests_handover(phrase) is True
+    assert parse_voice_target(phrase) == "black_box"
+    assert voice.submit_transcript(phrase) is True
+
+    parsed = voice.poll()
+
+    assert parsed is not None
+    assert parsed.target == "black_box"
+    assert parsed.handover is True
+
+
+def test_voice_language_can_be_switched_without_reloading_model() -> None:
+    recognizer = VoiceToText(language="English")
+    model_marker = object()
+    recognizer._model = model_marker
+
+    assert recognizer.language == "en"
+    assert recognizer.switch_language("Chinese") == "zh"
+    assert recognizer.language == "zh"
+    assert recognizer._model is model_marker
+
+    voice = VoiceGraspInput(language="zh")
+    assert voice.switch_language("en-US") == "en"
+    assert voice.language == "en"
+
+
+def test_voice_handover_uses_dedicated_action_and_clears_grasp_state() -> None:
+    app = GraspDemoApp.__new__(GraspDemoApp)
+    app.state = RuntimeState(
+        base_targets=[SimpleNamespace(label="pen")],
+        grasp_confirmed=True,
+        grasp_confirmed_hand="left",
+        grasp_confirmed_label="pen",
+    )
+    app.voice_input = VoiceGraspInput()
+    app.voice_input.activate("pen", handover=True)
+    app.place_future = None
+    app.robot_actions = Mock()
+    app.action_executor = Mock()
+    future = Future()
+    app.action_executor.submit.return_value = future
+
+    app.start_place()
+
+    app.action_executor.submit.assert_called_once_with(
+        app.robot_actions.publish_handover,
+        grasp_confirmed=True,
+        hand="left",
+        object_label="pen",
+        release_requested=app.handover_release_requested,
+        ready_event=app.handover_ready,
+    )
+    future.set_result(SimpleNamespace(
+        ok=True, status="left handover pose reached", grasp_hand="left",
+    ))
+    app.collect_place_result()
+
+    assert app.voice_input.task_active is False
+    assert app.state.grasp_confirmed is False
+    assert app.state.grasp_confirmed_hand is None
+    assert app.state.grasp_confirmed_label is None
+
+
+def test_b_confirms_release_only_after_handover_is_ready() -> None:
+    app = GraspDemoApp.__new__(GraspDemoApp)
+    app.state = RuntimeState()
+    app.place_handover_task = True
+    app.handover_ready = Event()
+    app.handover_release_requested = Event()
+    app.manual_home_future = None
+
+    assert app.handle_key(ord("b"), None)
+    assert app.handover_release_requested.is_set() is False
+    assert app.state.status == "Handover not ready: B release ignored"
+
+    app.handover_ready.set()
+    assert app.handle_key(ord("b"), None)
+    assert app.handover_release_requested.is_set() is True
+    assert app.state.status == "Handover release confirmed by B"
 
 
 def test_disabled_web_service_does_not_build_interface(monkeypatch) -> None:
