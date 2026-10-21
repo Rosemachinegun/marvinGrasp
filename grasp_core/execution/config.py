@@ -113,8 +113,8 @@ class PlaceConfig:
 
 @dataclass(frozen=True)
 class HomeConfig:
-    left_xyz: tuple[float, float, float] = (0.25, 0.25, 0.83)
-    right_xyz: tuple[float, float, float] = (0.25, -0.25, 0.83)
+    left_xyz: tuple[float, float, float] = (0.25, 0.25, 0.76)
+    right_xyz: tuple[float, float, float] = (0.25, -0.25, 0.76)
     safe_z_m: float = 0.95
     side_clearance_y_m: float = 0.28
     tilt_z_left_deg: float = 0.2

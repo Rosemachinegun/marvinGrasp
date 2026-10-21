@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import time
 from threading import Event
+from typing import Callable
 
 import numpy as np
 
@@ -21,12 +22,14 @@ from grasp_core.execution.motion_executor import (
     request_ik_publisher_unavailable_status,
 )
 from grasp_core.execution.result import SkillResult
+from grasp_core.execution.skills.place import execute_fixed_place_after_grasp
 from grasp_core.execution.stop_control import publisher_stop_requested
 
 
 LEFT_HANDOVER_XYZ = (0.65, 0.253, 0.87)
 POST_RELEASE_HOLD_SEC = 0.5
 HANDOVER_CONFIRM_POLL_SEC = 0.1
+HANDOVER_CONFIRM_TIMEOUT_SEC = 7.0
 
 
 def _release_failed(status: str) -> bool:
@@ -56,8 +59,10 @@ def execute_handover_after_grasp(
     grasp_confirmed: bool,
     release_requested: Event,
     ready_event: Event,
+    object_type: str | None = None,
+    timeout_prompt: Callable[[], object] | None = None,
 ) -> SkillResult:
-    """Move to handover, wait for operator confirmation, release, then HOME."""
+    """Move to handover, or fall back to fixed Place after a B-key timeout."""
     hand = normalize_hand(hand)
     if not bool(grasp_confirmed):
         status = f"{hand} handover blocked: grasp is not confirmed"
@@ -101,9 +106,35 @@ def execute_handover_after_grasp(
         f"[handover] {hand} reached handover pose; press B to release",
         flush=True,
     )
+    confirm_deadline = time.monotonic() + HANDOVER_CONFIRM_TIMEOUT_SEC
     while not release_requested.wait(timeout=HANDOVER_CONFIRM_POLL_SEC):
         if publisher_stop_requested(publisher):
             return SkillResult(False, f"STOPPED while {hand} awaited B release")
+        if time.monotonic() >= confirm_deadline:
+            ready_event.clear()
+            print(
+                f"[handover] no B confirmation within "
+                f"{HANDOVER_CONFIRM_TIMEOUT_SEC:g}s; playing no-handover prompt",
+                flush=True,
+            )
+            if timeout_prompt is not None:
+                timeout_prompt()
+            if publisher_stop_requested(publisher):
+                return SkillResult(False, f"STOPPED before {hand} fallback Place")
+            place_result = execute_fixed_place_after_grasp(
+                publisher,
+                hand,
+                args,
+                grasp_confirmed=True,
+                object_type=object_type,
+                target_count=1,
+            )
+            return SkillResult(
+                place_result.ok,
+                f"{hand} handover timed out after "
+                f"{HANDOVER_CONFIRM_TIMEOUT_SEC:g}s; fallback Place: "
+                f"{place_result.status}",
+            )
 
     release_status = send_gripper_signal("release", args, hand=hand)
     if _release_failed(release_status):

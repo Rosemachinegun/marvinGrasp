@@ -26,7 +26,7 @@ VOICE_SAMPLE_RATE = 16_000
 VOICE_MIN_RMS = float(os.getenv("VOICE_MIN_RMS", "0.001"))
 VOICE_GAIN = float(os.getenv("VOICE_GAIN", "1.0"))
 VOICE_AUTO_GAIN = float(os.getenv("VOICE_AUTO_GAIN", "8.0"))
-VOICE_LANGUAGE = os.getenv("VOICE_LANGUAGE", "en")
+VOICE_LANGUAGE = os.getenv("VOICE_LANGUAGE", "zh")
 VOICE_HOTWORDS = {
     "en": (
         "Marvin give me pick up grab hand me pencil case pencil box "
@@ -34,7 +34,7 @@ VOICE_HOTWORDS = {
     ),
     "zh": (
         "Marvin 机械臂 抓取 夹取 递给我 笔 钢笔 螺丝刀 把手 "
-        "蓝色方块 黄色方块 方块 U盘 硬盘"
+        "玩具 蓝色方块 黄色方块 方块 U盘 硬盘"
     ),
 }
 
@@ -90,7 +90,7 @@ class VoiceToText:
     ``FASTER_WHISPER_DEVICE`` (``cuda`` or ``cpu``; default: auto)
     ``FASTER_WHISPER_COMPUTE_TYPE`` (default: auto)
     ``VOICE_INPUT_DEVICE`` (optional sounddevice input-device index/name)
-    ``VOICE_LANGUAGE`` (``en`` or ``zh``; default: ``en``)
+    ``VOICE_LANGUAGE`` (``en`` or ``zh``; default: ``zh``)
     """
 
     def __init__(self, language: str = VOICE_LANGUAGE) -> None:
@@ -268,8 +268,8 @@ def parse_voice_target(text: str) -> str | None:
         return "yellow_cube"
     if "笔" in command or any(name in command for name in ("pen", "pencil")):
         return "pen"
-    if "玩具" in command or "toy" in command:
-        return "toy"
+    if "玩具" in command or "white toy" in command:
+        return "white toy"
     return None
 
 
@@ -365,6 +365,8 @@ class VoiceGraspInput:
                 self._recognizer = self._build_recognizer()
         except Exception as exc:  # noqa: BLE001
             print(f"[voice] STT unavailable: {exc}", flush=True)
+            if not self._stop.is_set() and not self._cancelled.is_set():
+                self.submit_transcript("")
             return
 
         if self._stop.is_set() or self._cancelled.is_set():
@@ -373,6 +375,8 @@ class VoiceGraspInput:
             result = self._recognizer.listen_once(duration=self.record_seconds)
         except Exception as exc:  # noqa: BLE001
             print(f"[voice] recognition failed: {exc}", flush=True)
+            if not self._stop.is_set() and not self._cancelled.is_set():
+                self.submit_transcript("")
             return
         if self._stop.is_set() or self._cancelled.is_set():
             return

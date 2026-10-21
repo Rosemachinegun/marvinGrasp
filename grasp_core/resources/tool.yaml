@@ -477,7 +477,7 @@ templates:
       time: [0.0, ]
 
 
-  toy:
+  white_toy:
     pick:
     - action_name: pick
       arm: left

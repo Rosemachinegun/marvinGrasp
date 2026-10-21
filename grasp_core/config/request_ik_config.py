@@ -25,7 +25,7 @@ from grasp_core.execution.config import (
     DEFAULT_TARGET_TRAJECTORY_ANGULAR_SPEED_DPS,
     DEFAULT_TARGET_TRAJECTORY_MIN_STEPS,
     DEFAULT_TARGET_TRAJECTORY_SPEED_MPS,
-    DEFAULT_TARGET_TRAJECTORY_STEP_DEG,
+    DEFAULT_TARGET_TRAJECTORY_STEP_DEG,                       
     DEFAULT_TARGET_TRAJECTORY_STEP_M,
     MOTION_CONFIG,
 )
@@ -185,7 +185,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     parser.add_argument("--fps", type=int, default=30)
-    parser.add_argument("--prompts", default="blue stuff,toy")
+    parser.add_argument("--prompts", default="white toy,black box")
     parser.add_argument(
         "--tablet-ui",
         action=argparse.BooleanOptionalAction,
@@ -218,7 +218,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--voice-record-seconds",
         type=float,
-        default=1.5,
+        default=3,
         help="Duration of one voice recording.",
     )
     parser.add_argument(

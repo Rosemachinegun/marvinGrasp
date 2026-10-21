@@ -6,9 +6,9 @@
     "speed_coe": 3600
   },
   "192.168.14.10:55551": {
-    "clamp_pos": 23065,
+    "clamp_pos": 22716,
     "max_itinerary": 90000,
-    "open_pos": -66935,
+    "open_pos": -67284,
     "speed_coe": 3600
   }
 }

@@ -49,6 +49,19 @@ python flowpose_request_ik_tester.py
 
 ROS 软件源配置采用 [ROS2 官方安装流程](https://github.com/ros2/ros2_documentation/blob/humble/source/Installation/_Apt-Repositories.rst)。
 
+## 部署资源 Benchmark
+
+RTX 笔记本部署前，可用独立 benchmark 测量 SAM3、FlowPose、共同常驻和连续
+100 次完整感知链路的显存、RAM、利用率、初始化时间、延迟与内存增长：
+
+```bash
+python benchmarks/deployment/run.py --camera --prompt pen
+```
+
+录制输入、指标口径、报告格式和 RTX 5060 判定规则见
+[Deployment Benchmark](benchmarks/deployment/README.md)，实际模型/CUDA 加载审计见
+[生产模型与 CUDA 资源审计](benchmarks/deployment/MODEL_AUDIT.md)。
+
 ## 目录结构
 
 ```text

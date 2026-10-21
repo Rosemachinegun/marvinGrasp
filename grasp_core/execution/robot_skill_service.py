@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from threading import Event
 
 from grasp_core.execution.skills.grasp import GraspSkill, execute_grasp
@@ -145,8 +146,9 @@ class RobotActionService:
         object_label: str | None = None,
         release_requested: Event,
         ready_event: Event,
+        timeout_prompt: Callable[[], object] | None = None,
     ) -> RobotActionResult:
-        """Wait for confirmed handover release, then return HOME."""
+        """Wait for handover confirmation or run the timeout Place fallback."""
         handover_hand = hand or ("left" if self.args.ik_hand == "left" else "right")
         result = execute_handover_after_grasp(
             self.ik_publisher,
@@ -155,6 +157,8 @@ class RobotActionService:
             grasp_confirmed=grasp_confirmed,
             release_requested=release_requested,
             ready_event=ready_event,
+            object_type=object_label,
+            timeout_prompt=timeout_prompt,
         )
         return RobotActionResult(
             status=result.status,

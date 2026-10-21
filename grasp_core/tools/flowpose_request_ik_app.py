@@ -67,6 +67,7 @@ from grasp_core.execution.skills.grasp import GRASP_PLANNER  # noqa: E402
 from grasp_core.planning.grasp.policies.ribbon import assume_grasp_success  # noqa: E402
 from grasp_core.planning.grasp.planner import UnifiedGraspPlanner  # noqa: E402
 from add.voice import VoiceGraspInput  # noqa: E402
+from add.voice_output import START_RECOGNITION, VoiceOutput  # noqa: E402
 from add.web import (  # noqa: E402
     TabletCommand,
     TabletTaskLoopBridge,
@@ -231,6 +232,7 @@ class GraspDemoApp:
             enabled=bool(getattr(args, "voice_enabled", VOICE_ENABLED)),
             record_seconds=float(getattr(args, "voice_record_seconds", 4.0)),
         )
+        self.voice_output = VoiceOutput()
 
     def _print_camera_extrinsic(self) -> None:
         ext = self.camera_extrinsic
@@ -292,6 +294,7 @@ class GraspDemoApp:
 
     def close(self) -> None:
         """Release all resources. Safe to call after partial startup."""
+        self.voice_output.close()
         self.voice_input.close()
         if self.tablet_web is not None:
             self.tablet_web.close()
@@ -794,13 +797,24 @@ class GraspDemoApp:
         grasp_confirmed = self.state.grasp_confirmed
 
         if self.place_handover_task:
-            self.place_future = self.action_executor.submit(
-                self.robot_actions.publish_handover,
+            voice_output = getattr(self, "voice_output", None)
+            timeout_prompt = (
+                getattr(voice_output, "play_no_handover_and_wait", None)
+                if voice_output is not None
+                else None
+            )
+            handover_kwargs = dict(
                 grasp_confirmed=grasp_confirmed,
                 hand=hand,
                 object_label=object_label,
                 release_requested=self.handover_release_requested,
                 ready_event=self.handover_ready,
+            )
+            if callable(timeout_prompt):
+                handover_kwargs["timeout_prompt"] = timeout_prompt
+            self.place_future = self.action_executor.submit(
+                self.robot_actions.publish_handover,
+                **handover_kwargs,
             )
             self.state.status = "Handover action running"
         else:
@@ -845,6 +859,9 @@ class GraspDemoApp:
             self.voice_input.finish_task()
             if handover_task:
                 # The handover future includes B-confirmed release and HOME.
+                voice_output = getattr(self, "voice_output", None)
+                if voice_output is not None:
+                    voice_output.play_goodbye()
                 self.state.grasp_confirmed = False
                 self.state.grasp_confirmed_hand = None
                 self.state.grasp_confirmed_label = None
@@ -1240,12 +1257,16 @@ class GraspDemoApp:
                 s.pipeline_stage = PipelineStage.IDLE
                 s.status = "Pipeline stopped: SAM3 produced no result"
                 s.pipeline_grasp_on_done = True
+                if self.voice_input.task_active:
+                    self.fail_voice_task()
                 return
 
             s.pipeline_stage = PipelineStage.FLOWPOSE
             self.submit_flowpose()
             if s.flowpose_future is None:
                 s.pipeline_stage = PipelineStage.IDLE
+                if self.voice_input.task_active:
+                    self.fail_voice_task()
             return
 
         if s.pipeline_stage is PipelineStage.FLOWPOSE:
@@ -1255,6 +1276,8 @@ class GraspDemoApp:
             if not s.base_targets:
                 s.status = "Pipeline stopped: FlowPose produced no target"
                 s.pipeline_grasp_on_done = True
+                if self.voice_input.task_active:
+                    self.fail_voice_task()
                 self.home_both_when_no_targets()
                 return
 
@@ -1378,13 +1401,47 @@ class GraspDemoApp:
         )
 
     def request_voice(self) -> None:
-        """Start the same one-shot voice flow for keyboard and tablet input."""
+        """Play the welcome prompts, then start one-shot speech recognition."""
+        voice_output = getattr(self, "voice_output", None)
+        if voice_output is None:
+            # Compatibility for lightweight adapters that only provide STT.
+            status = self.voice_input.request(robot_busy=self.robot_busy())
+        elif not self.voice_input.enabled:
+            status = None
+        elif self.robot_busy() or self.voice_input.task_active:
+            status = "Voice command ignored: robot busy"
+        elif self.voice_input.recognition_running:
+            status = "Voice recognition already running"
+        else:
+            status = voice_output.play_welcome()
+        if status:
+            self.state.status = status
+
+    def collect_voice_output(self) -> None:
+        """Start STT only after Marvin's complete prompt sequence finishes."""
+        voice_output = getattr(self, "voice_output", None)
+        if voice_output is None:
+            return
+        result = voice_output.poll()
+        if result is None:
+            return
+        if not result.succeeded:
+            self.state.status = f"Voice prompt failed: {result.error}"
+            return
+        if result.purpose != START_RECOGNITION:
+            return
+        if bool(getattr(self.state, "paused", False)):
+            self.state.status = "Voice recognition cancelled: application paused"
+            return
         status = self.voice_input.request(robot_busy=self.robot_busy())
         if status:
             self.state.status = status
 
     def stop_from_tablet(self) -> None:
         """Request the same safe stop used by the keyboard pause key."""
+        voice_output = getattr(self, "voice_output", None)
+        if voice_output is not None:
+            voice_output.cancel()
         self.voice_input.cancel()
         self.state.paused = True
         self.state.pipeline_stage = PipelineStage.IDLE
@@ -1401,10 +1458,25 @@ class GraspDemoApp:
         if parsed is None:
             return
         self.state.status = parsed.status
-        if parsed.target is None or self.state.paused:
+        if self.state.paused:
+            return
+        if parsed.target is None:
+            self.fail_voice_task()
             return
         self.voice_input.activate(parsed.target, handover=parsed.handover)
-        self.start_pipeline(grasp_on_done=True)
+        if not self.start_pipeline(grasp_on_done=True):
+            self.fail_voice_task()
+            return
+        voice_output = getattr(self, "voice_output", None)
+        if voice_output is not None:
+            voice_output.play_task_accepted()
+
+    def fail_voice_task(self) -> None:
+        """Play the failure prompt once and clear the current voice target."""
+        voice_output = getattr(self, "voice_output", None)
+        if voice_output is not None:
+            voice_output.play_task_failed()
+        self.voice_input.finish_task()
 
     def publish_tablet_state(self, bundle) -> None:
         """Publish the latest in-memory perception result to the tablet UI."""
@@ -1497,7 +1569,12 @@ class GraspDemoApp:
         if key == KEY_FLOWPOSE and bool(
             getattr(self, "place_handover_task", False)
         ):
-            if self.handover_ready.is_set():
+            if self.handover_release_requested.is_set():
+                self.state.status = "Handover release already confirmed by B"
+            elif self.handover_ready.is_set():
+                voice_output = getattr(self, "voice_output", None)
+                if voice_output is not None:
+                    voice_output.play_reply_thanks()
                 self.handover_release_requested.set()
                 self.state.status = "Handover release confirmed by B"
             else:
@@ -1548,6 +1625,7 @@ class GraspDemoApp:
                 continue
 
             self.handle_tablet_commands(bundle)
+            self.collect_voice_output()
             self.collect_voice_result()
             if self.state.paused:
                 if not self.state.status.startswith("Paused by S"):
